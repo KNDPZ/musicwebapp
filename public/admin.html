@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Admin · Music</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body style="padding-bottom:24px">
+<div class="wrap">
+  <div class="top">
+    <div class="brand">Admin</div>
+    <a href="/">View site</a>
+    <button class="btn ghost hidden" id="logout">Log out</button>
+  </div>
+
+  <section id="login" class="card hidden" style="max-width:420px">
+    <h2>Log in</h2>
+    <form class="form" id="loginForm" style="flex-direction:column;align-items:stretch">
+      <label for="id" class="muted">ID</label>
+      <input id="id" type="text" autocomplete="username" required>
+      <label for="pw" class="muted">Password</label>
+      <input id="pw" type="password" autocomplete="current-password" required>
+      <button class="btn" type="submit">Log in</button>
+    </form>
+    <p class="msg err" id="loginMsg" role="alert"></p>
+  </section>
+
+  <div id="panel" class="hidden">
+    <section class="card">
+      <h2>Add music</h2>
+      <label class="drop" id="drop" for="files" style="display:block">Drop .mp3 files here, or click to choose<input id="files" type="file" accept=".mp3,audio/mpeg" multiple class="hidden"></label>
+      <div id="queue"></div>
+    </section>
+
+    <section class="card">
+      <h2>Songs <span class="muted" id="count"></span></h2>
+      <div style="overflow-x:auto"><table><thead><tr><th>Title</th><th>Artist</th><th>Album</th><th>Plays</th><th></th></tr></thead><tbody id="rows"></tbody></table></div>
+    </section>
+
+    <section class="card" style="max-width:520px">
+      <h2>Change password</h2>
+      <form class="form" id="pwForm" style="flex-direction:column;align-items:stretch">
+        <label for="cur" class="muted">Current password</label>
+        <input id="cur" type="password" autocomplete="current-password" required>
+        <label for="nw" class="muted">New password (8+ characters)</label>
+        <input id="nw" type="password" autocomplete="new-password" minlength="8" required>
+        <button class="btn" type="submit">Save password</button>
+      </form>
+      <p class="msg" id="pwMsg" role="status"></p>
+    </section>
+  </div>
+</div>
+<script type="module" src="/admin.js"></script>
+</body>
+</html>

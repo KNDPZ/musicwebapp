@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Music</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div class="brand">Music</div>
+    <label for="q" class="hidden">Search</label>
+    <input id="q" type="search" placeholder="Search songs, artists, albums" style="flex:1;min-width:200px;max-width:420px">
+  </div>
+  <div class="tabs" role="tablist" aria-label="Sort music">
+    <button class="tab" role="tab" data-view="recent" aria-selected="true">Recently added</button>
+    <button class="tab" role="tab" data-view="top" aria-selected="false">Most listened</button>
+    <button class="tab" role="tab" data-view="artists" aria-selected="false">Artists</button>
+  </div>
+  <main id="list" aria-live="polite"></main>
+  <p class="muted" style="margin-top:40px"><a href="/admin.html">Admin</a></p>
+</div>
+
+<div class="player">
+  <div class="info"><b id="pt">Nothing playing</b><br><span class="muted" id="pa">Pick a song</span></div>
+  <div class="mid">
+    <div class="ctl">
+      <button class="ib" id="prev" aria-label="Previous"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 5h2v14H6zM20 5v14L9 12z"/></svg></button>
+      <button class="ib play" id="pp" aria-label="Play"><svg id="ppi" width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4v16l13-8z"/></svg></button>
+      <button class="ib" id="next" aria-label="Next"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16 5h2v14h-2zM4 5v14l11-7z"/></svg></button>
+    </div>
+    <div class="seek"><span class="muted" id="cur">0:00</span><input id="seek" type="range" min="0" max="100" value="0" step="0.1" aria-label="Seek"><span class="muted" id="dur">0:00</span></div>
+  </div>
+  <div class="info hidden-sm"></div>
+</div>
+<audio id="audio" preload="none"></audio>
+<script src="/app.js" type="module"></script>
+</body>
+</html>
