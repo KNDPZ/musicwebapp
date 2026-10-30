@@ -1,7 +1,6 @@
 # Music app (Cloudflare Workers + R2 + D1)
 
-Public music player anyone can listen to, plus a password-protected admin page at `/admin.html`
-for dropping in mp3 files. Sorted by recently added, most listened, and artist > album (from ID3 tags).
+A public music player anyone can listen to, with an admin area (gear icon, top right) for uploading and managing mp3 files.
 
 ## Deploy from GitHub (no manual resource setup)
 
@@ -15,11 +14,34 @@ for dropping in mp3 files. Sorted by recently added, most listened, and artist >
 
 ## First login
 
+Click the gear icon (top right of the site).
+
 - ID: `admin`
 - Password: `21232f297a57a5a743894a0e4a801fc3`
 
-Then open **Change password** on the admin page and set your own. The password is stored only as a
-salted PBKDF2 hash in the D1 database; changing it also logs out all other sessions.
+Then use **Change password** on the admin page. The password is stored only as a salted PBKDF2 hash in D1.
+
+## Uploading (admin page)
+
+Choose how to upload, then drop .mp3 files:
+
+- **Singles**: filed under the artist. If a file's tags include an album, it is filed under that album.
+- **Playlist**: filed by artist and album from the tags, and every song is also added to the playlist you name
+  (an existing name adds to that playlist). A song can be in many playlists.
+- **Album**: filed under the artist's album. Album and artist fields are optional overrides of the tags.
+
+A song that is already stored (same file contents) is never uploaded twice. In playlist mode it is added to the playlist instead.
+
+## Listener features
+
+Tabs: recently added, most listened, artists, playlists, most hearted / liked / disliked. Player: heart, like, dislike,
+volume, repeat (each song 2x or 3x), shuffle (all songs, same artist, same playlist) and an Up next list.
+
+## Artwork
+
+Album art comes from the cover embedded in your mp3; if there is none it is looked up on Deezer's public search API
+(no key) and cached in R2. Artist photos come from Deezer. Admin > **Refresh artwork** clears downloaded images.
+Images are third-party content.
 
 ## Local dev
 
@@ -30,6 +52,5 @@ npx wrangler dev
 
 ## Notes
 
-- Uploads are limited to 100 MB per file (Workers request limit).
-- Login is limited to 5 failed attempts per IP per 15 minutes.
-- A play counts after 10 seconds of listening.
+- Uploads are limited to 100 MB per file. Login: 5 failed attempts per IP per 15 minutes.
+- A play counts after 10 seconds. Hearts/likes/dislikes are one per visitor per song (tracked by a random id in the browser).

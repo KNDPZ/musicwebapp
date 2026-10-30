@@ -7,34 +7,71 @@
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-heart" viewBox="0 0 24 24"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 0 0-7.8 7.8l1 1.1L12 21l7.8-7.5 1-1.1a5.5 5.5 0 0 0 0-7.8z"/></symbol>
+  <symbol id="i-up" viewBox="0 0 24 24"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.3a2 2 0 0 0 2-1.7l1.4-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.7a2 2 0 0 0-2 1.7l-1.4 9a2 2 0 0 0 2 2.3zm7-13h2.7a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H17"/></symbol>
+  <symbol id="i-shuffle" viewBox="0 0 24 24"><path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></symbol>
+  <symbol id="i-repeat" viewBox="0 0 24 24"><path d="M17 1l4 4-4 4M3 11V9a4 4 0 0 1 4-4h14M7 23l-4-4 4-4M21 13v2a4 4 0 0 1-4 4H3"/></symbol>
+  <symbol id="i-vol" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4zM19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></symbol>
+  <symbol id="i-mute" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4zM23 9l-6 6M17 9l6 6"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
+</svg>
+
 <div class="wrap">
   <div class="top">
     <div class="brand">Music</div>
     <label for="q" class="hidden">Search</label>
     <input id="q" type="search" placeholder="Search songs, artists, albums" style="flex:1;min-width:200px;max-width:420px">
+    <button class="ib ico" id="gear" aria-label="Admin login" title="Admin"><svg><use href="#i-gear"/></svg></button>
   </div>
-  <div class="tabs" role="tablist" aria-label="Sort music">
-    <button class="tab" role="tab" data-view="recent" aria-selected="true">Recently added</button>
-    <button class="tab" role="tab" data-view="top" aria-selected="false">Most listened</button>
-    <button class="tab" role="tab" data-view="artists" aria-selected="false">Artists</button>
-  </div>
+  <nav class="tabs" id="tabs" aria-label="Sort music"></nav>
   <main id="list" aria-live="polite"></main>
-  <p class="muted" style="margin-top:40px"><a href="/admin.html">Admin</a></p>
 </div>
 
-<div class="player">
-  <div class="info"><b id="pt">Nothing playing</b><br><span class="muted" id="pa">Pick a song</span></div>
+<aside id="upnext" class="upnext hidden" aria-label="Up next">
+  <div class="uph"><b>Up next</b><span class="muted" id="uql"></span></div>
+  <div id="uplist"></div>
+</aside>
+
+<div class="player" id="player">
+  <div class="info"><span id="pc"></span><span class="txt"><b id="pt">Nothing playing</b><br><span class="muted" id="pa">Pick a song</span></span></div>
   <div class="mid">
     <div class="ctl">
-      <button class="ib" id="prev" aria-label="Previous"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 5h2v14H6zM20 5v14L9 12z"/></svg></button>
-      <button class="ib play" id="pp" aria-label="Play"><svg id="ppi" width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4v16l13-8z"/></svg></button>
-      <button class="ib" id="next" aria-label="Next"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16 5h2v14h-2zM4 5v14l11-7z"/></svg></button>
+      <button class="ib react" id="bh" aria-label="Heart" aria-pressed="false" title="Heart"><svg><use href="#i-heart"/></svg><small id="ch">0</small></button>
+      <button class="ib react" id="bl" aria-label="Like" aria-pressed="false" title="Like"><svg><use href="#i-up"/></svg><small id="cl">0</small></button>
+      <button class="ib react" id="bd" aria-label="Dislike" aria-pressed="false" title="Dislike"><svg><use href="#i-down"/></svg><small id="cd">0</small></button>
+      <button class="ib" id="prev" aria-label="Previous"><svg class="fill" viewBox="0 0 24 24"><path d="M6 5h2v14H6zM20 5v14L9 12z"/></svg></button>
+      <button class="ib play" id="pp" aria-label="Play"><svg class="fill" viewBox="0 0 24 24" id="ppi"><path d="M7 4v16l13-8z"/></svg></button>
+      <button class="ib" id="next" aria-label="Next"><svg class="fill" viewBox="0 0 24 24"><path d="M16 5h2v14h-2zM4 5v14l11-7z"/></svg></button>
     </div>
     <div class="seek"><span class="muted" id="cur">0:00</span><input id="seek" type="range" min="0" max="100" value="0" step="0.1" aria-label="Seek"><span class="muted" id="dur">0:00</span></div>
   </div>
-  <div class="info hidden-sm"></div>
+  <div class="right">
+    <div class="shuf" role="group" aria-label="Shuffle">
+      <button class="pill" id="sAll" title="Play a random song from the whole library"><svg><use href="#i-shuffle"/></svg>All</button>
+      <button class="pill" id="sArtist" title="Random song from this artist"><svg><use href="#i-shuffle"/></svg>Artist</button>
+      <button class="pill" id="sList" title="Random song from this playlist"><svg><use href="#i-shuffle"/></svg>Playlist</button>
+    </div>
+    <button class="pill" id="rep" aria-label="Repeat: off" title="Repeat each song"><svg><use href="#i-repeat"/></svg><span id="repT">Off</span></button>
+    <div class="vol"><button class="ib" id="mute" aria-label="Mute"><svg id="muteI"><use href="#i-vol"/></svg></button><input id="vol" type="range" min="0" max="1" step="0.01" value="1" aria-label="Volume"></div>
+    <button class="ib" id="qbtn" aria-label="Up next list" aria-expanded="false" title="Up next"><svg><use href="#i-list"/></svg></button>
+  </div>
 </div>
 <audio id="audio" preload="none"></audio>
+
+<dialog id="dlg" aria-labelledby="dlgT">
+  <form id="loginForm" class="form" style="flex-direction:column;align-items:stretch">
+    <h2 id="dlgT" style="margin:0 0 4px">Log in</h2>
+    <label for="lid" class="muted">ID</label>
+    <input id="lid" type="text" autocomplete="username" required>
+    <label for="lpw" class="muted">Password</label>
+    <input id="lpw" type="password" autocomplete="current-password" required>
+    <p class="msg err" id="lerr" role="alert"></p>
+    <div class="form" style="justify-content:flex-end"><button class="btn ghost" type="button" id="lcancel">Cancel</button><button class="btn" type="submit">Log in</button></div>
+  </form>
+</dialog>
 <script src="/app.js" type="module"></script>
 </body>
 </html>

@@ -16,6 +16,7 @@ export async function readTags(file) {
       const size = (head[6] << 21) | (head[7] << 14) | (head[8] << 7) | head[9];
       const buf = new Uint8Array(await file.slice(10, 10 + size).arrayBuffer());
       const map = { TIT2: "title", TPE1: "artist", TALB: "album", TRCK: "track" };
+      const find = (d, sig) => { for (let i = 0; i < Math.min(d.length - sig.length, 400); i++) if (sig.every((b, j) => d[i + j] === b)) return i; return -1; };
       let p = 0;
       while (p + 10 <= buf.length) {
         const id = String.fromCharCode(...buf.subarray(p, p + 4));
@@ -24,7 +25,13 @@ export async function readTags(file) {
           ? (buf[p + 4] << 21) | (buf[p + 5] << 14) | (buf[p + 6] << 7) | buf[p + 7]
           : ((buf[p + 4] << 24) | (buf[p + 5] << 16) | (buf[p + 6] << 8) | buf[p + 7]) >>> 0;
         if (fs <= 0 || p + 10 + fs > buf.length) break;
-        if (map[id]) out[map[id]] = decode(buf.subarray(p + 10, p + 10 + fs));
+        const d = buf.subarray(p + 10, p + 10 + fs);
+        if (map[id]) out[map[id]] = decode(d);
+        else if (id === "APIC" && !out.cover && fs < 5e6) {
+          let i = find(d, [0xff, 0xd8, 0xff]), type = "image/jpeg";
+          if (i < 0) { i = find(d, [0x89, 0x50, 0x4e, 0x47]); type = "image/png"; }
+          if (i >= 0) out.cover = new Blob([d.slice(i)], { type });
+        }
         p += 10 + fs;
       }
     }

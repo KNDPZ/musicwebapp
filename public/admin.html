@@ -8,7 +8,7 @@
 <link rel="stylesheet" href="/style.css">
 </head>
 <body style="padding-bottom:24px">
-<div class="wrap">
+<div class="wrap narrow">
   <div class="top">
     <div class="brand">Admin</div>
     <a href="/">View site</a>
@@ -30,12 +30,33 @@
   <div id="panel" class="hidden">
     <section class="card">
       <h2>Add music</h2>
+      <fieldset><legend class="muted">Upload as</legend>
+        <label><input type="radio" name="mode" value="singles" checked> Singles</label>
+        <label><input type="radio" name="mode" value="playlist"> Playlist</label>
+        <label><input type="radio" name="mode" value="album"> Album</label>
+      </fieldset>
+      <p class="muted" id="hint" style="margin-top:0"></p>
+      <div id="plField" class="form hidden" style="margin-bottom:12px">
+        <label for="plName" class="muted">Playlist name</label>
+        <input id="plName" type="text" list="plList" maxlength="80" placeholder="New or existing playlist">
+        <datalist id="plList"></datalist>
+      </div>
+      <div id="alField" class="form hidden" style="margin-bottom:12px">
+        <label for="alName" class="muted">Album</label><input id="alName" type="text" maxlength="200" placeholder="From tags if blank">
+        <label for="alArtist" class="muted">Artist</label><input id="alArtist" type="text" maxlength="200" placeholder="From tags if blank">
+      </div>
       <label class="drop" id="drop" for="files" style="display:block">Drop .mp3 files here, or click to choose<input id="files" type="file" accept=".mp3,audio/mpeg" multiple class="hidden"></label>
+      <p class="msg err" id="upMsg" role="alert"></p>
       <div id="queue"></div>
     </section>
 
     <section class="card">
-      <h2>Songs <span class="muted" id="count"></span></h2>
+      <h2>Playlists</h2>
+      <div id="plRows" class="muted">No playlists yet.</div>
+    </section>
+
+    <section class="card">
+      <div class="form" style="justify-content:space-between;margin-bottom:12px"><h2 style="margin:0">Songs <span class="muted" id="count"></span></h2><button class="btn ghost" id="refreshArt" type="button">Refresh artwork</button></div>
       <div style="overflow-x:auto"><table><thead><tr><th>Title</th><th>Artist</th><th>Album</th><th>Plays</th><th></th></tr></thead><tbody id="rows"></tbody></table></div>
     </section>
 
