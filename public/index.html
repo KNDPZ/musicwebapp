@@ -28,7 +28,7 @@
   </div>
   <nav class="tabs" id="tabs" aria-label="Sort music"></nav>
   <nav class="tabs sub hidden" id="subtabs" aria-label="Recently added"></nav>
-  <main id="list" aria-live="polite"></main>
+  <main id="list"></main>
 </div>
 
 <aside id="upnext" class="upnext hidden" aria-label="Up next">
@@ -61,6 +61,14 @@
   </div>
 </div>
 <audio id="audio" preload="none"></audio>
+
+<dialog id="msgDlg" aria-labelledby="msgT">
+  <div class="form" style="flex-direction:column;align-items:stretch">
+    <h2 id="msgT" style="margin:0"></h2>
+    <p id="msgP" style="margin:0"></p>
+    <div class="form" style="justify-content:flex-end"><button class="btn" id="msgOk" type="button">OK</button></div>
+  </div>
+</dialog>
 
 <dialog id="dlg" aria-labelledby="dlgT">
   <form id="loginForm" class="form" style="flex-direction:column;align-items:stretch">

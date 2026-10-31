@@ -39,9 +39,30 @@ playlists, and the top 50 most hearted, top 20 most liked and top 20 most dislik
 grid of album art (9+ albums) or a 2x2 grid. Player: heart, like, dislike,
 volume, repeat (each song 2x or 3x), shuffle (all songs, same artist, same playlist) and an Up next list.
 
+## Requests
+
+The **Request** tab has two parts: **Queue** (everything waiting) and **Make a request**. Visitors pick Song, Artist or Album,
+type a name and choose from a dropdown of matches with pictures (from Deezer's public search, looked up again on the
+server so names and images can't be faked), or paste a Spotify playlist link. A request that is already queued shows a
+popup instead of being added, and so does one that is already in the library.
+
+Song, album and artist requests leave the queue automatically when a matching song is uploaded or edited. A playlist
+request leaves when you create a playlist with the same name (or remove it in Admin > Request queue).
+Limits: 10 requests per visitor and 20 per network per day, 500 waiting in total.
+
+## Artist biography
+
+An artist page shows a short biography from Wikipedia (with a link). It is cached in R2; artists with no matching
+Wikipedia page show none.
+
+## Admin extras
+
+- Songs are listed 30 per page, newest first, with page numbers and a search box.
+- Playlists: **Change image** sets your own cover (JPEG, PNG or WebP, up to 5 MB); **Use automatic** goes back to the album grid.
+
 ## Clean database
 
-Admin > **Clean database** deletes every song, playlist, artwork file, play count and reaction. It asks for your
+Admin > **Clean database** deletes every song, playlist, request, artwork file, play count and reaction. It asks for your
 password and the word `confirm`. Your admin login is kept.
 
 ## Artwork

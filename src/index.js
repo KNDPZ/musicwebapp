@@ -47,9 +47,13 @@ function init(env) {
       q("CREATE TABLE IF NOT EXISTS playlists (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, created_at INTEGER NOT NULL)"),
       q("CREATE TABLE IF NOT EXISTS playlist_tracks (playlist_id TEXT NOT NULL, track_id TEXT NOT NULL, added_at INTEGER NOT NULL, PRIMARY KEY (playlist_id, track_id))"),
       q("CREATE TABLE IF NOT EXISTS reactions (track_id TEXT NOT NULL, voter TEXT NOT NULL, kind TEXT NOT NULL, PRIMARY KEY (track_id, voter, kind))"),
+      q(`CREATE TABLE IF NOT EXISTS requests (
+        id TEXT PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL, artist TEXT NOT NULL DEFAULT '', album TEXT NOT NULL DEFAULT '',
+        image TEXT, url TEXT, dedupe TEXT NOT NULL UNIQUE, voter TEXT NOT NULL, ip TEXT NOT NULL, created_at INTEGER NOT NULL)`),
       q("INSERT OR IGNORE INTO admin (id, salt, hash) VALUES ('admin', ?, ?)").bind(DEFAULT_SALT, DEFAULT_HASH),
     ]);
     try { await q("ALTER TABLE tracks ADD COLUMN hash TEXT").run(); } catch {} // upgrade from an older version
+    try { await q("ALTER TABLE playlists ADD COLUMN cover_v INTEGER NOT NULL DEFAULT 0").run(); } catch {} // custom playlist image version
     await q("CREATE UNIQUE INDEX IF NOT EXISTS idx_tracks_hash ON tracks(hash)").run();
     await q("CREATE INDEX IF NOT EXISTS idx_reactions_track ON reactions(track_id)").run();
   })().catch((e) => { ready = undefined; throw e; }));
@@ -119,8 +123,17 @@ async function deezerImage(kind, artist, album, title) {
 }
 const noArt = (cache) => new Response(null, { status: 404, headers: { "cache-control": cache } });
 async function serveArt(env, url) {
-  const kind = url.pathname.slice(5); // album | artist | track
+  const kind = url.pathname.slice(5); // album | artist | track | playlist
   const p = url.searchParams;
+  if (kind === "playlist") { // an image the admin chose for a playlist
+    const id = clean(p.get("id"), 64);
+    const obj = /^[\w-]+$/.test(id) ? await env.MUSIC.get(`art/playlist/${id}`) : null;
+    if (!obj) return noArt("public, max-age=300");
+    const h = new Headers();
+    obj.writeHttpMetadata(h);
+    h.set("cache-control", "public, max-age=86400");
+    return new Response(obj.body, { headers: h });
+  }
   let artist, album = "", title = "", key;
   if (kind === "track") {
     const id = clean(p.get("id"), 64);
@@ -164,6 +177,110 @@ async function serveArt(env, url) {
   return new Response(obj.body, { headers: h });
 }
 
+// ---------- requests, suggestions, biographies ----------
+let DZ = "https://api.deezer.com", WIKI = "https://en.wikipedia.org"; // overridable with env vars for testing
+const fold = (s) => String(s ?? "").normalize("NFKD").replace(/\p{M}/gu, "");
+const core = (s) => norm(fold(String(s ?? "").replace(/[(\[][^)\]]*[)\]]/g, " ").replace(/\s+-\s+.*$/, "")));
+const same = (a, b) => { a = core(a); b = core(b); return !!a && a === b; };
+const sameName = (a, b) => { a = core(a); b = core(b); return !!a && !!b && (a === b || a.startsWith(b + " ") || b.startsWith(a + " ")); };
+const IMG_OK = /^https:\/\/([\w-]+\.)*(dzcdn\.net|scdn\.co|spotifycdn\.com)\//;
+const safeImage = (u) => (typeof u === "string" && IMG_OK.test(u) && !u.includes("/artist//") ? u : null);
+const UA = { "user-agent": "music-app/1.0 (personal music site on Cloudflare Workers)", accept: "application/json" };
+
+async function suggest(url) {
+  const type = url.searchParams.get("type"), q = clean(url.searchParams.get("q"), 80);
+  const ep = { song: "track", artist: "artist", album: "album" }[type];
+  if (!ep || q.length < 2) return json([]);
+  let d;
+  try {
+    const res = await fetch(`${DZ}/search/${ep}?limit=8&q=${encodeURIComponent(q)}`, { headers: UA, cf: { cacheTtl: 600, cacheEverything: true } });
+    d = await res.json();
+    if (!res.ok || d.error) throw new Error("deezer");
+  } catch { return json({ error: "Search is unavailable right now." }, 502); }
+  return json((d.data || []).map((r) => type === "song"
+    ? { id: r.id, title: r.title, sub: [r.artist?.name, r.album?.title].filter(Boolean).join(" · "), image: safeImage(r.album?.cover_medium) }
+    : type === "album" ? { id: r.id, title: r.title, sub: r.artist?.name || "", image: safeImage(r.cover_medium) }
+    : { id: r.id, title: r.name, sub: "Artist", image: safeImage(r.picture_medium) }));
+}
+
+// Names and images in a request always come from Deezer/Spotify, looked up by id on the server, never from the visitor.
+async function deezerItem(kind, id) {
+  const ep = { song: "track", artist: "artist", album: "album" }[kind];
+  if (!ep || !/^\d{1,15}$/.test(id)) return null;
+  const r = await fetch(`${DZ}/${ep}/${id}`, { headers: UA });
+  const d = await r.json();
+  if (!r.ok || d.error) return null;
+  if (kind === "song") return { kind, title: clean(d.title), artist: clean(d.artist?.name), album: clean(d.album?.title), image: safeImage(d.album?.cover_medium), dedupe: `song|${core(d.artist?.name)}|${core(d.title)}` };
+  if (kind === "album") return { kind, title: clean(d.title), artist: clean(d.artist?.name), album: "", image: safeImage(d.cover_medium), dedupe: `album|${core(d.artist?.name)}|${core(d.title)}` };
+  return { kind, title: clean(d.name), artist: "", album: "", image: safeImage(d.picture_medium), dedupe: `artist|${core(d.name)}` };
+}
+async function spotifyPlaylist(raw) {
+  const m = raw.trim().match(/^https:\/\/open\.spotify\.com\/(?:intl-[a-z-]+\/)?playlist\/([A-Za-z0-9]{10,40})(?:[/?#].*)?$/);
+  if (!m) return { error: "Paste the full Spotify playlist link, like https://open.spotify.com/playlist/…" };
+  const link = `https://open.spotify.com/playlist/${m[1]}`;
+  let title = "Spotify playlist", image = null;
+  try {
+    const r = await fetch("https://open.spotify.com/oembed?url=" + encodeURIComponent(link), { headers: UA });
+    if (r.status === 404) return { error: "Spotify couldn't find that playlist. Make sure it is public." };
+    if (r.ok) { const o = await r.json(); title = clean(o.title, 120) || title; image = safeImage(o.thumbnail_url); }
+  } catch {} // details are a nicety; the link alone is enough to queue it
+  return { kind: "playlist", title, artist: "", album: "", image, url: link, dedupe: `playlist|${m[1]}` };
+}
+async function inLibrary(DB, it) {
+  if (it.kind === "playlist") return (await DB.prepare("SELECT name FROM playlists").all()).results.some((p) => norm(p.name) === norm(it.title));
+  const lib = (await DB.prepare("SELECT artist, title, album FROM tracks").all()).results;
+  return lib.some((t) => it.kind === "song" ? same(t.title, it.title) && sameName(t.artist, it.artist)
+    : it.kind === "album" ? t.album && same(t.album, it.title) && sameName(t.artist, it.artist) : sameName(t.artist, it.title));
+}
+// A newly added song takes any matching requests (song, its album, its artist) out of the queue.
+async function fulfil(env, t) {
+  const { results } = await env.DB.prepare("SELECT id, kind, title, artist FROM requests WHERE kind != 'playlist'").all();
+  const done = results.filter((r) => r.kind === "song" ? same(r.title, t.title) && sameName(r.artist, t.artist)
+    : r.kind === "album" ? t.album && same(r.title, t.album) && sameName(r.artist, t.artist) : sameName(r.title, t.artist));
+  if (done.length) await env.DB.batch(done.map((r) => env.DB.prepare("DELETE FROM requests WHERE id = ?").bind(r.id)));
+}
+
+const MUSICY = /\b(band|musician|singer|rapper|songwriter|group|duo|trio|quartet|dj|composer|vocalist|guitarist|producer|artist|metal|rock|pop|hip hop)\b/i;
+async function wikipediaBio(name) {
+  for (const q of [`${name} (band OR musician OR singer OR rapper)`, name]) {
+    const s = await fetch(`${WIKI}/w/api.php?action=query&list=search&srlimit=3&format=json&srsearch=${encodeURIComponent(q)}`, { headers: UA });
+    if (!s.ok) throw new Error("wikipedia unavailable");
+    for (const h of (await s.json())?.query?.search || []) {
+      const r = await fetch(`${WIKI}/api/rest_v1/page/summary/${encodeURIComponent(String(h.title).replace(/ /g, "_"))}`, { headers: UA });
+      if (!r.ok) continue;
+      const d = await r.json();
+      const base = String(d.title || "").replace(/\s*\(.*\)\s*$/, "");
+      if (d.type !== "standard" || !d.extract || !sameName(base, name)) continue;
+      if (!MUSICY.test(`${d.description || ""} ${d.extract.slice(0, 300)}`)) continue;
+      let text = d.extract.replace(/\s+/g, " ").trim();
+      if (text.length > 520) {
+        const cut = text.slice(0, 520), i = cut.lastIndexOf(". ");
+        text = i > 200 ? cut.slice(0, i + 1) : cut.replace(/\s+\S*$/, "") + "…";
+      }
+      return { text, url: `https://en.wikipedia.org/wiki/${encodeURIComponent(String(d.title).replace(/ /g, "_"))}` };
+    }
+  }
+  return null;
+}
+async function serveBio(env, url) {
+  const name = clean(url.searchParams.get("name"));
+  if (!name || /^unknown/i.test(name) || !(await env.DB.prepare("SELECT 1 FROM tracks WHERE artist = ? LIMIT 1").bind(name).first()))
+    return json({ error: "none" }, 404, { "cache-control": "public, max-age=300" });
+  const key = `bio/${(await sha256(norm(name))).slice(0, 24)}`;
+  let rec = null;
+  const obj = await env.MUSIC.get(key);
+  if (obj) { try { rec = await obj.json(); } catch {} }
+  if (rec?.none && Date.now() - rec.at > RETRY_MS) rec = null;
+  if (!rec) {
+    let found;
+    try { found = await wikipediaBio(name); } catch { return json({ error: "unavailable" }, 502); }
+    rec = found ? { ...found, at: Date.now() } : { none: true, at: Date.now() };
+    await env.MUSIC.put(key, JSON.stringify(rec), { httpMetadata: { contentType: "application/json" } });
+  }
+  return rec.none ? json({ error: "none" }, 404, { "cache-control": "public, max-age=300" })
+    : json({ text: rec.text, url: rec.url, source: "Wikipedia" }, 200, { "cache-control": "public, max-age=3600" });
+}
+
 const TRACK_COLS = `t.id, t.title, t.artist, t.album, t.track_no, t.duration, t.plays, t.created_at,
   COALESCE(SUM(r.kind = 'heart'), 0) AS hearts, COALESCE(SUM(r.kind = 'like'), 0) AS likes, COALESCE(SUM(r.kind = 'dislike'), 0) AS dislikes`;
 
@@ -180,7 +297,7 @@ async function api(req, env, url) {
     return json(results);
   }
   if (path === "/api/playlists" && m === "GET") {
-    const pls = (await DB.prepare("SELECT id, name, created_at FROM playlists ORDER BY created_at DESC").all()).results;
+    const pls = (await DB.prepare("SELECT id, name, created_at, cover_v FROM playlists ORDER BY created_at DESC").all()).results;
     const links = (await DB.prepare("SELECT playlist_id, track_id, added_at FROM playlist_tracks ORDER BY added_at, rowid").all()).results;
     const by = {}, upd = {};
     links.forEach((l) => {
@@ -188,6 +305,37 @@ async function api(req, env, url) {
       upd[l.playlist_id] = Math.max(upd[l.playlist_id] || 0, l.added_at);
     });
     return json(pls.map((p) => ({ ...p, updated_at: Math.max(p.created_at, upd[p.id] || 0), tracks: by[p.id] || [] })));
+  }
+  if (path === "/api/suggest" && m === "GET") return suggest(url);
+  if (path === "/api/bio" && m === "GET") return serveBio(env, url);
+  if (path === "/api/requests" && m === "GET") {
+    const { results } = await DB.prepare("SELECT id, kind, title, artist, album, image, url, created_at FROM requests ORDER BY created_at, rowid").all();
+    return json(results);
+  }
+  if (path === "/api/request" && m === "POST") {
+    const b = await req.json().catch(() => ({}));
+    const vid = req.headers.get("X-Visitor") || "";
+    if (!/^[\w-]{8,64}$/.test(vid) || !["song", "artist", "album", "playlist"].includes(b.kind)) return json({ error: "Bad request." }, 400);
+    const voter = await sha256(vid), ipH = await sha256(req.headers.get("CF-Connecting-IP") || "unknown");
+    const lim = await DB.prepare(
+      `SELECT COALESCE(SUM(created_at > ?1 AND voter = ?2), 0) AS v, COALESCE(SUM(created_at > ?1 AND ip = ?3), 0) AS i, COUNT(*) AS n FROM requests`)
+      .bind(Date.now() - 86400000, voter, ipH).first();
+    if (lim.v >= 10 || lim.i >= 20) return json({ error: "You've made a lot of requests today. Please try again tomorrow." }, 429);
+    if (lim.n >= 500) return json({ error: "The queue is full right now. Please try again later." }, 429);
+    let item;
+    try { item = b.kind === "playlist" ? await spotifyPlaylist(String(b.url ?? "")) : await deezerItem(b.kind, String(b.id ?? "")); }
+    catch { return json({ error: "Couldn't reach the search service. Try again in a moment." }, 502); }
+    if (!item) return json({ error: "We couldn't find that. Try searching again." }, 404);
+    if (item.error) return json({ error: item.error }, 400);
+    if (await DB.prepare("SELECT 1 FROM requests WHERE dedupe = ?").bind(item.dedupe).first())
+      return json({ error: "That's already in the queue.", code: "in_queue" }, 409);
+    if (await inLibrary(DB, item)) return json({ error: "That's already in the library.", code: "in_library" }, 409);
+    try {
+      await DB.prepare("INSERT INTO requests (id, kind, title, artist, album, image, url, dedupe, voter, ip, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
+        .bind(crypto.randomUUID(), item.kind, item.title, item.artist || "", item.album || "", item.image, item.url || null, item.dedupe, voter, ipH, Date.now()).run();
+    } catch { return json({ error: "That's already in the queue.", code: "in_queue" }, 409); }
+    const { n } = await DB.prepare("SELECT COUNT(*) AS n FROM requests").first();
+    return json({ ok: true, position: n }, 201);
   }
   if ((x = path.match(/^\/api\/play\/([\w-]+)$/)) && m === "POST") {
     await DB.prepare("UPDATE tracks SET plays = plays + 1 WHERE id = ?").bind(x[1]).run();
@@ -243,6 +391,27 @@ async function api(req, env, url) {
   const sid = await session(req, env);
   if (!sid) return json({ error: "Not logged in." }, 401);
 
+  if ((x = path.match(/^\/api\/admin\/requests\/([\w-]+)$/)) && m === "DELETE") {
+    await DB.prepare("DELETE FROM requests WHERE id = ?").bind(x[1]).run();
+    return json({ ok: true });
+  }
+  if ((x = path.match(/^\/api\/admin\/playlists\/([\w-]+)\/cover$/))) {
+    if (!(await DB.prepare("SELECT 1 FROM playlists WHERE id = ?").bind(x[1]).first())) return json({ error: "Playlist not found." }, 404);
+    if (m === "PUT") {
+      const type = req.headers.get("content-type") || "";
+      const size = Number(req.headers.get("content-length") || 0);
+      if (!/^image\/(jpeg|png|webp)$/.test(type) || !size || size > 5 * 1024 * 1024) return json({ error: "Choose a JPEG, PNG or WebP image under 5 MB." }, 400);
+      await env.MUSIC.put(`art/playlist/${x[1]}`, req.body, { httpMetadata: { contentType: type }, customMetadata: { source: "custom", at: String(Date.now()) } });
+      const v = Date.now();
+      await DB.prepare("UPDATE playlists SET cover_v = ? WHERE id = ?").bind(v, x[1]).run();
+      return json({ ok: true, cover_v: v });
+    }
+    if (m === "DELETE") {
+      await env.MUSIC.delete(`art/playlist/${x[1]}`);
+      await DB.prepare("UPDATE playlists SET cover_v = 0 WHERE id = ?").bind(x[1]).run();
+      return json({ ok: true });
+    }
+  }
   if (path === "/api/admin/check" && m === "POST") {
     const b = await req.json().catch(() => ({}));
     const row = /^[0-9a-f]{64}$/.test(b.hash) ? await DB.prepare("SELECT id FROM tracks WHERE hash = ?").bind(b.hash).first() : null;
@@ -278,6 +447,7 @@ async function api(req, env, url) {
       .bind(t.id, t.title, t.artist, t.album, t.track_no, t.duration, size, now, hash)];
     if (pid) stmts.push(DB.prepare("INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, added_at) VALUES (?,?,?)").bind(pid, id, now));
     await DB.batch(stmts);
+    await fulfil(env, t).catch(() => {}); // takes matching requests out of the queue
     return json(t, 201);
   }
   if (path === "/api/admin/playlists" && m === "POST") {
@@ -289,6 +459,9 @@ async function api(req, env, url) {
       row = { id: crypto.randomUUID(), name };
       await DB.prepare("INSERT INTO playlists (id, name, created_at) VALUES (?,?,?)").bind(row.id, name, Date.now()).run();
     }
+    // a playlist request leaves the queue once a playlist with the same name exists
+    const asked = (await DB.prepare("SELECT id, title FROM requests WHERE kind = 'playlist'").all()).results.filter((r) => norm(r.title) === norm(name));
+    if (asked.length) await DB.batch(asked.map((r) => DB.prepare("DELETE FROM requests WHERE id = ?").bind(r.id)));
     return json(row);
   }
   if ((x = path.match(/^\/api\/admin\/playlists\/([\w-]+)\/tracks$/)) && m === "POST") {
@@ -302,6 +475,7 @@ async function api(req, env, url) {
       DB.prepare("DELETE FROM playlist_tracks WHERE playlist_id = ?").bind(x[1]),
       DB.prepare("DELETE FROM playlists WHERE id = ?").bind(x[1]),
     ]);
+    await env.MUSIC.delete(`art/playlist/${x[1]}`);
     return json({ ok: true });
   }
   if ((x = path.match(/^\/api\/admin\/tracks\/([\w-]+)\/cover$/)) && m === "PUT") {
@@ -318,7 +492,7 @@ async function api(req, env, url) {
     let cursor, removed = 0;
     do {
       const l = await env.MUSIC.list({ prefix: "art/", cursor, include: ["customMetadata"] });
-      const keys = l.objects.filter((o) => o.customMetadata?.source !== "embedded").map((o) => o.key);
+      const keys = l.objects.filter((o) => !["embedded", "custom"].includes(o.customMetadata?.source)).map((o) => o.key);
       if (keys.length) { await env.MUSIC.delete(keys); removed += keys.length; }
       cursor = l.truncated ? l.cursor : undefined;
     } while (cursor);
@@ -338,6 +512,7 @@ async function api(req, env, url) {
       const b = await req.json().catch(() => ({}));
       await DB.prepare("UPDATE tracks SET title = ?, artist = ?, album = ? WHERE id = ?")
         .bind(clean(b.title) || "Untitled", clean(b.artist) || "Unknown Artist", clean(b.album), x[1]).run();
+      await fulfil(env, { title: clean(b.title), artist: clean(b.artist), album: clean(b.album) }).catch(() => {});
       return json({ ok: true });
     }
   }
@@ -364,7 +539,7 @@ async function api(req, env, url) {
     } while (cursor);
     await DB.batch([
       DB.prepare("DELETE FROM playlist_tracks"), DB.prepare("DELETE FROM playlists"),
-      DB.prepare("DELETE FROM reactions"), DB.prepare("DELETE FROM tracks"),
+      DB.prepare("DELETE FROM reactions"), DB.prepare("DELETE FROM tracks"), DB.prepare("DELETE FROM requests"),
     ]);
     return json({ ok: true, removed });
   }
@@ -389,10 +564,12 @@ async function api(req, env, url) {
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
+    if (env.DEEZER_API) DZ = env.DEEZER_API;
+    if (env.WIKI_API) WIKI = env.WIKI_API;
     try {
       await init(env);
       if (url.pathname.startsWith("/audio/")) return await serveAudio(req, env, url.pathname.slice(7));
-      if (["/art/album", "/art/artist", "/art/track"].includes(url.pathname)) return await serveArt(env, url);
+      if (["/art/album", "/art/artist", "/art/track", "/art/playlist"].includes(url.pathname)) return await serveArt(env, url);
       if (url.pathname.startsWith("/api/")) return await api(req, env, url);
     } catch (e) {
       return json({ error: "Server error: " + e.message }, 500);

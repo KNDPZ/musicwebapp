@@ -8,7 +8,7 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
 const audio = $("#audio");
-const TABS = { recent: "Recently added", top: "Most listened", artists: "Artists", playlists: "Playlists", hearts: "Most hearted", likes: "Most liked", dislikes: "Most disliked" };
+const TABS = { recent: "Recently added", top: "Most listened", artists: "Artists", playlists: "Playlists", hearts: "Most hearted", likes: "Most liked", dislikes: "Most disliked", request: "Request" };
 const KEY = { heart: "hearts", like: "likes", dislike: "dislikes" };
 
 let tracks = [], byId = {}, playlists = [], query = "";
@@ -46,11 +46,16 @@ function renderTabs(active) {
   $("#tabs").innerHTML = Object.entries(TABS).map(([k, v]) =>
     `<a class="tab" href="#${k}"${k === active ? ' aria-current="page"' : ""}>${v}</a>`).join("");
 }
-function renderSub(sub) {
-  const el = $("#subtabs");
-  el.classList.toggle("hidden", !sub);
-  el.innerHTML = sub ? Object.entries(SUBS).map(([k, v]) =>
-    `<a class="tab" href="#recent${k === "songs" ? "" : "/" + k}"${k === sub ? ' aria-current="page"' : ""}>${v}</a>`).join("") : "";
+const SUBMAPS = {
+  recent: { items: SUBS, def: "songs" },
+  request: { items: { queue: "Queue", new: "Make a request" }, def: "queue" },
+};
+function renderSub(tab, sub) {
+  const el = $("#subtabs"), sm = SUBMAPS[tab];
+  el.classList.toggle("hidden", !sm);
+  el.setAttribute("aria-label", TABS[tab] || "");
+  el.innerHTML = sm ? Object.entries(sm.items).map(([k, v]) =>
+    `<a class="tab" href="#${tab}${k === sm.def ? "" : "/" + k}"${k === sub ? ' aria-current="page"' : ""}>${v}</a>`).join("") : "";
 }
 const match = (t) => !query || `${t.title} ${t.artist} ${albumName(t)}`.toLowerCase().includes(query);
 const latest = (l) => Math.max(0, ...l.map((t) => t.created_at));
@@ -67,9 +72,11 @@ const noView = () => { view = { ids: [], label: "", pl: null }; };
 function render() {
   const { a, arg } = parse();
   const tab = a === "artist" ? "artists" : a === "playlist" ? "playlists" : a === "album" ? "recent" : has(TABS, a) ? a : "recent";
-  const sub = tab !== "recent" ? null : a === "album" ? "albums" : has(SUBS, arg) ? arg : "songs";
-  renderTabs(tab); renderSub(sub);
+  const sm = SUBMAPS[tab];
+  const sub = !sm ? null : a === "album" ? "albums" : has(sm.items, arg) ? arg : sm.def;
+  renderTabs(tab); renderSub(tab, sub);
   const el = $("#list");
+  if (tab === "request") { if (sub === "new") requestForm(el); else requestQueue(el); return; }
   if (!tracks.length) { el.innerHTML = empty("No music yet. Check back soon."); noView(); return; }
   if (a === "artist") artistPage(el, dec(arg));
   else if (a === "playlist") playlistPage(el, dec(arg));
@@ -154,11 +161,22 @@ function artistPage(el, name) {
   view = { ids, label: name, pl: null };
   const albums = names.filter((g) => g).length;
   el.innerHTML = `<a class="back" href="#artists">← All artists</a>
-    <div class="hero">${art(artistArt(name), name, "round")}<div><h1>${esc(name)}</h1><span class="muted">${plural(ts.length, "song")}${albums ? " · " + plural(albums, "album") : ""}</span>${actions()}</div></div>${body}`;
+    <div class="hero">${art(artistArt(name), name, "round")}<div><h1>${esc(name)}</h1><span class="muted">${plural(ts.length, "song")}${albums ? " · " + plural(albums, "album") : ""}</span><p class="bio" id="bio"></p>${actions()}</div></div>${body}`;
+  loadBio(name);
+}
+async function loadBio(name) {
+  try {
+    const r = await fetch("/api/bio?name=" + enc(name));
+    if (!r.ok) return;
+    const b = await r.json(), el = $("#bio"), cur = parse();
+    if (el && cur.a === "artist" && dec(cur.arg) === name)
+      el.innerHTML = `${esc(b.text)} <a href="${esc(b.url)}" target="_blank" rel="noopener">${esc(b.source)}</a>`;
+  } catch {}
 }
 
 // Playlist cover: 9 different album covers when the playlist has 9+ albums, otherwise a 4-cover grid.
 function mosaic(p) {
+  if (p.cover_v) return art(`/art/playlist?id=${enc(p.id)}&v=${p.cover_v}`, p.name);
   const seen = new Set(), urls = [];
   for (const id of p.tracks) {
     const t = byId[id]; if (!t) continue;
@@ -188,6 +206,111 @@ function playlistPage(el, id) {
     <div class="hero">${mosaic(p)}<div><h1>${esc(p.name)}</h1><span class="muted">${plural(l.length, "song")}</span>${actions()}</div></div>
     ${l.map((t, i) => row(t, i + 1, "", true)).join("")}`;
 }
+
+// ---------- requests ----------
+const KIND = { song: "Song", artist: "Artist", album: "Album", playlist: "Playlist" };
+let flash = "", reqKind = "song", picked = null, sugg = [], active = -1, seq = 0, timer = 0;
+
+function popup(title, text) { $("#msgT").textContent = title; $("#msgP").textContent = text; $("#msgDlg").showModal(); $("#msgOk").focus(); }
+
+async function requestQueue(el) {
+  noView();
+  el.innerHTML = `<p class="muted">Loading the queue…</p>`;
+  let list = [];
+  try { list = await (await fetch("/api/requests")).json(); } catch {}
+  const cur = parse();
+  if (cur.a !== "request" || cur.arg === "new") return;
+  const note = flash ? `<p class="msg" role="status">${esc(flash)}</p>` : ""; flash = "";
+  const sub = (r) => r.kind === "song" ? [r.artist, r.album].filter(Boolean).join(" · ") : r.kind === "album" ? r.artist : r.kind === "playlist" ? "Spotify playlist" : "";
+  el.innerHTML = note + (list.length ? list.map((r, i) =>
+    `<div class="qline"><span class="n muted">${i + 1}</span>${art(r.image, r.title, "lg")}<span class="t">${esc(r.title)}<small>${esc(sub(r))}</small></span><span class="chip">${KIND[r.kind]}</span></div>`).join("")
+    : empty(`The queue is empty. <a href="#request/new">Request something</a>.`));
+}
+
+function requestForm(el) {
+  noView();
+  const pl = reqKind === "playlist";
+  el.innerHTML = `<form class="reqform" id="reqForm" autocomplete="off">
+    <p class="muted" style="margin-top:0">Ask for a song, artist, album or a Spotify playlist. Requests wait in the queue until they are added.</p>
+    <div class="tabs" role="group" aria-label="What are you requesting?">${Object.entries(KIND).map(([k, v]) =>
+      `<button type="button" class="tab" data-kind="${k}" aria-pressed="${k === reqKind}">${v}</button>`).join("")}</div>
+    <div class="combo">
+      <label for="rq" class="muted">${pl ? "Spotify playlist link" : `Search for a ${KIND[reqKind].toLowerCase()}`}</label>
+      <input id="rq" type="text" ${pl ? "" : 'role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="rqList"'} placeholder="${pl ? "https://open.spotify.com/playlist/…" : "Start typing a name"}" maxlength="200" style="width:100%;margin-top:6px">
+      <ul id="rqList" class="sugg hidden" role="listbox" aria-label="Suggestions"></ul>
+    </div>
+    <div id="rqPick"></div>
+    <button class="btn" id="rqGo" type="submit" disabled>Add to queue</button>
+  </form>`;
+  picked = null; sugg = []; active = -1;
+}
+function onType() {
+  const v = $("#rq").value.trim();
+  picked = null; $("#rqPick").innerHTML = "";
+  if (reqKind === "playlist") { $("#rqGo").disabled = !v; return; }
+  $("#rqGo").disabled = true; clearTimeout(timer);
+  if (v.length < 2) { closeList(); return; }
+  const my = ++seq;
+  timer = setTimeout(async () => {
+    let r;
+    try { r = await (await fetch(`/api/suggest?type=${reqKind}&q=${enc(v)}`)).json(); } catch { r = {}; }
+    if (my !== seq || !$("#rq")) return;
+    sugg = Array.isArray(r) ? r : [];
+    showList(sugg, Array.isArray(r) ? "No matches. Try a different spelling." : "Search is unavailable right now.");
+  }, 250);
+}
+function showList(items, none) {
+  const ul = $("#rqList"); active = -1;
+  ul.innerHTML = items.length ? items.map((s, i) =>
+    `<li role="option" id="rqo${i}" data-i="${i}" aria-selected="false">${art(s.image, s.title)}<span class="t">${esc(s.title)}<small>${esc(s.sub)}</small></span></li>`).join("")
+    : `<li class="none" role="presentation">${esc(none)}</li>`;
+  ul.classList.remove("hidden"); $("#rq").setAttribute("aria-expanded", "true");
+}
+function closeList() {
+  const ul = $("#rqList"); if (!ul) return;
+  ul.classList.add("hidden"); $("#rq").setAttribute("aria-expanded", "false"); $("#rq").removeAttribute("aria-activedescendant");
+}
+function setActive(i) {
+  document.querySelectorAll("#rqList li[role=option]").forEach((li, k) => li.setAttribute("aria-selected", k === i));
+  active = i;
+  const li = $("#rqo" + i);
+  if (li) { $("#rq").setAttribute("aria-activedescendant", "rqo" + i); li.scrollIntoView({ block: "nearest" }); }
+}
+function onKey(e) {
+  if (reqKind === "playlist") return;
+  const open = !$("#rqList").classList.contains("hidden") && sugg.length;
+  if (e.key === "ArrowDown" && open) { e.preventDefault(); setActive((active + 1) % sugg.length); }
+  else if (e.key === "ArrowUp" && open) { e.preventDefault(); setActive((active - 1 + sugg.length) % sugg.length); }
+  else if (e.key === "Enter" && open && active >= 0) { e.preventDefault(); choose(active); }
+  else if (e.key === "Escape") closeList();
+}
+function choose(i) {
+  const s = sugg[i]; if (!s) return;
+  picked = s; $("#rq").value = s.title; closeList();
+  $("#rqPick").innerHTML = `<div class="pick">${art(s.image, s.title, "lg")}<span class="t">${esc(s.title)}<small>${esc(s.sub)}</small></span><span class="chip">${KIND[reqKind]}</span></div>`;
+  $("#rqGo").disabled = false;
+}
+async function sendRequest() {
+  const body = reqKind === "playlist" ? { kind: "playlist", url: $("#rq").value.trim() } : picked ? { kind: reqKind, id: String(picked.id) } : null;
+  if (!body) return;
+  const go = $("#rqGo"); go.disabled = true; go.textContent = "Adding…";
+  let r, j = {};
+  try {
+    r = await fetch("/api/request", { method: "POST", headers: { "content-type": "application/json", "X-Visitor": vid }, body: JSON.stringify(body) });
+    j = await r.json();
+  } catch { r = { ok: false }; j = { error: "Couldn't reach the server. Try again." }; }
+  go.textContent = "Add to queue"; go.disabled = false;
+  if (r.ok) { flash = `Added to the queue${j.position ? ` — you're number ${j.position}` : ""}.`; location.hash = "#request"; return; }
+  if (j.code === "in_queue") popup("Already in the queue", "This has already been requested and is waiting in the queue.");
+  else if (j.code === "in_library") popup("Already in the library", "This is already here. Search for it, or look under Recently added.");
+  else popup("Couldn't add your request", j.error || "Something went wrong.");
+}
+$("#list").addEventListener("input", (e) => { if (e.target.id === "rq") onType(); });
+$("#list").addEventListener("keydown", (e) => { if (e.target.id === "rq") onKey(e); });
+$("#list").addEventListener("submit", (e) => { if (e.target.id === "reqForm") { e.preventDefault(); sendRequest(); } });
+$("#list").addEventListener("mousedown", (e) => { const li = e.target.closest("#rqList li[role=option]"); if (li) { e.preventDefault(); choose(+li.dataset.i); } });
+document.addEventListener("click", (e) => { if (!e.target.closest(".combo")) closeList(); });
+$("#msgOk").addEventListener("click", () => $("#msgDlg").close());
 
 // ---------- playback + queue ----------
 const shuffled = (a) => { a = [...a]; for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
@@ -266,6 +389,8 @@ $("#bd").addEventListener("click", () => react("dislike"));
 
 // ---------- controls ----------
 $("#list").addEventListener("click", (e) => {
+  const k = e.target.closest("[data-kind]");
+  if (k) { reqKind = k.dataset.kind; requestForm($("#list")); return; }
   const b = e.target.closest("[data-act]");
   if (b) {
     if (!view.ids.length) return;
@@ -279,7 +404,7 @@ $("#list").addEventListener("click", (e) => {
 $("#uplist").addEventListener("click", (e) => { const r = e.target.closest(".qrow"); if (r) play(r.dataset.id); });
 $("#tabs").addEventListener("click", () => window.scrollTo(0, 0));
 window.addEventListener("hashchange", () => { render(); window.scrollTo(0, 0); });
-$("#q").addEventListener("input", (e) => { query = e.target.value.trim().toLowerCase(); render(); });
+$("#q").addEventListener("input", (e) => { query = e.target.value.trim().toLowerCase(); if (parse().a !== "request") render(); });
 $("#pp").addEventListener("click", () => {
   if (audio.src) return audio.paused ? audio.play() : audio.pause();
   if (view.ids.length) startQueue(view.ids, view.ids[0], view.label, view.pl); else shuffleIn("all");
