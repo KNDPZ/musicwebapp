@@ -47,6 +47,7 @@ function init(env) {
       q("CREATE TABLE IF NOT EXISTS playlists (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, created_at INTEGER NOT NULL)"),
       q("CREATE TABLE IF NOT EXISTS playlist_tracks (playlist_id TEXT NOT NULL, track_id TEXT NOT NULL, added_at INTEGER NOT NULL, PRIMARY KEY (playlist_id, track_id))"),
       q("CREATE TABLE IF NOT EXISTS reactions (track_id TEXT NOT NULL, voter TEXT NOT NULL, kind TEXT NOT NULL, PRIMARY KEY (track_id, voter, kind))"),
+      q("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"),
       q(`CREATE TABLE IF NOT EXISTS requests (
         id TEXT PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL, artist TEXT NOT NULL DEFAULT '', album TEXT NOT NULL DEFAULT '',
         image TEXT, url TEXT, dedupe TEXT NOT NULL UNIQUE, voter TEXT NOT NULL, ip TEXT NOT NULL, created_at INTEGER NOT NULL)`),
@@ -95,6 +96,26 @@ async function serveAudio(req, env, id) {
     h.set("content-length", String(obj.size));
   }
   return new Response(req.method === "HEAD" ? null : obj.body, { status, headers: h });
+}
+
+// ---------- site settings (name, browser tab, icon, front-page ad) ----------
+async function siteSettings(DB) {
+  const rows = (await DB.prepare("SELECT key, value FROM settings").all()).results;
+  const s = Object.fromEntries(rows.map((r) => [r.key, r.value]));
+  return {
+    name: s.site_name || "Music", title: s.tab_title || "", favicon: Number(s.favicon_v) || 0,
+    ad: { enabled: s.ad_enabled === "1", html: s.ad_html || "", height: Number(s.ad_height) || 340 },
+  };
+}
+async function serveFavicon(env) {
+  const obj = await env.MUSIC.get("site/favicon");
+  if (!obj) return new Response(null, { status: 404, headers: { "cache-control": "public, max-age=60" } });
+  const h = new Headers();
+  obj.writeHttpMetadata(h);
+  h.set("cache-control", "public, max-age=86400");
+  h.set("x-content-type-options", "nosniff");
+  h.set("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; sandbox"); // an uploaded SVG can never run scripts
+  return new Response(obj.body, { headers: h });
 }
 
 // ---------- artists ----------
@@ -392,6 +413,7 @@ async function api(req, env, url) {
     });
     return json(pls.map((p) => ({ ...p, updated_at: Math.max(p.created_at, upd[p.id] || 0), tracks: by[p.id] || [] })));
   }
+  if (path === "/api/site" && m === "GET") return json(await siteSettings(DB));
   if (path === "/api/suggest" && m === "GET") return suggest(url);
   if (path === "/api/bio" && m === "GET") return serveBio(env, url);
   if (path === "/api/lyrics" && m === "GET") return serveLyrics(env, url);
@@ -478,6 +500,39 @@ async function api(req, env, url) {
   const sid = await session(req, env);
   if (!sid) return json({ error: "Not logged in." }, 401);
 
+  if (path === "/api/admin/settings" && m === "PUT") {
+    const b = await req.json().catch(() => ({}));
+    const stmts = [];
+    const set = (k, v) => stmts.push(DB.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(k, String(v)));
+    if ("site_name" in b) set("site_name", clean(b.site_name, 60) || "Music");
+    if ("tab_title" in b) set("tab_title", clean(b.tab_title, 80));
+    if ("ad_enabled" in b) set("ad_enabled", b.ad_enabled ? "1" : "0");
+    if ("ad_html" in b) {
+      const h = String(b.ad_html ?? "");
+      if (h.length > 100000) return json({ error: "The ad code is too long (100,000 characters at most)." }, 400);
+      set("ad_html", h);
+    }
+    if ("ad_height" in b) set("ad_height", Math.min(1000, Math.max(60, parseInt(b.ad_height, 10) || 340)));
+    if (stmts.length) await DB.batch(stmts);
+    return json(await siteSettings(DB));
+  }
+  if (path === "/api/admin/favicon") {
+    if (m === "PUT") {
+      const type = req.headers.get("content-type") || "";
+      const size = Number(req.headers.get("content-length") || 0);
+      if (!/^image\/(png|jpeg|webp|gif|x-icon|vnd\.microsoft\.icon|svg\+xml)$/.test(type) || !size || size > 512 * 1024)
+        return json({ error: "Choose a PNG, ICO, SVG, JPEG, WebP or GIF image up to 512 KB." }, 400);
+      await env.MUSIC.put("site/favicon", req.body, { httpMetadata: { contentType: type } });
+      const v = Date.now();
+      await DB.prepare("INSERT INTO settings (key, value) VALUES ('favicon_v', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(String(v)).run();
+      return json({ ok: true, favicon: v });
+    }
+    if (m === "DELETE") {
+      await env.MUSIC.delete("site/favicon");
+      await DB.prepare("INSERT INTO settings (key, value) VALUES ('favicon_v', '0') ON CONFLICT(key) DO UPDATE SET value = '0'").run();
+      return json({ ok: true, favicon: 0 });
+    }
+  }
   if ((x = path.match(/^\/api\/admin\/requests\/([\w-]+)$/)) && m === "DELETE") {
     await DB.prepare("DELETE FROM requests WHERE id = ?").bind(x[1]).run();
     return json({ ok: true });
@@ -623,7 +678,7 @@ async function api(req, env, url) {
     let cursor, removed = 0;
     do {
       const l = await env.MUSIC.list({ cursor, limit: 1000 });
-      const keys = l.objects.map((o) => o.key);
+      const keys = l.objects.map((o) => o.key).filter((k) => !k.startsWith("site/")); // keep the browser icon
       if (keys.length) { await env.MUSIC.delete(keys); removed += keys.length; }
       cursor = l.truncated ? l.cursor : undefined;
     } while (cursor);
@@ -659,6 +714,7 @@ export default {
     if (env.LRCLIB_API) LRC = env.LRCLIB_API;
     try {
       await init(env);
+      if (url.pathname === "/site/favicon") return await serveFavicon(env);
       if (url.pathname.startsWith("/audio/")) return await serveAudio(req, env, url.pathname.slice(7));
       if (["/art/album", "/art/artist", "/art/track", "/art/playlist"].includes(url.pathname)) return await serveArt(env, url);
       if (url.pathname.startsWith("/api/")) return await api(req, env, url);

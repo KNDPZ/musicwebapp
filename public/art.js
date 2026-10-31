@@ -10,3 +10,6 @@ export const albumArt = (t) =>
   albumName(t) && !/^unknown/i.test(primaryArtist(t))
     ? `/art/album?artist=${encodeURIComponent(primaryArtist(t))}&album=${encodeURIComponent(albumName(t))}`
     : `/art/track?id=${encodeURIComponent(t.id)}`;
+// The front-page ad runs inside a sandboxed frame (no access to the site, its cookies or the admin session).
+export const adDoc = (html) => `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><base target="_blank"><style>html,body{margin:0;height:100%;font-family:system-ui,sans-serif;color:#F3EFE8;background:transparent}</style></head><body>${html}</body></html>`;
+export const AD_SANDBOX = "allow-scripts allow-popups allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation";

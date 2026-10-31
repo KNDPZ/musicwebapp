@@ -4,18 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<title>Admin · Music</title>
+<title>Admin</title>
+<link rel="icon" id="favicon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Ctext y=%27.9em%27 font-size=%2790%27%3E🎵%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="/style.css">
 </head>
-<body style="padding-bottom:24px">
-<div class="wrap narrow">
-  <div class="top">
-    <div class="brand">Admin</div>
-    <a href="/">View site</a>
-    <button class="btn ghost hidden" id="logout">Log out</button>
-  </div>
+<body style="--ph:0px;padding-bottom:0">
 
-  <section id="login" class="card hidden" style="max-width:420px">
+<div id="login" class="wrap narrow hidden">
+  <div class="top"><a class="brand" href="/">← Back to the site</a></div>
+  <section class="card" style="max-width:420px">
     <h2>Log in</h2>
     <form class="form" id="loginForm" style="flex-direction:column;align-items:stretch">
       <label for="id" class="muted">ID</label>
@@ -26,85 +23,169 @@
     </form>
     <p class="msg err" id="loginMsg" role="alert"></p>
   </section>
+</div>
 
-  <div id="panel" class="hidden">
-    <section class="card">
-      <h2>Add music</h2>
-      <fieldset><legend class="muted">Upload as</legend>
-        <label><input type="radio" name="mode" value="singles" checked> Singles</label>
-        <label><input type="radio" name="mode" value="playlist"> Playlist</label>
-        <label><input type="radio" name="mode" value="album"> Album</label>
-      </fieldset>
-      <p class="muted" id="hint" style="margin-top:0"></p>
-      <div id="plField" class="form hidden" style="margin-bottom:12px">
-        <label for="plName" class="muted">Playlist name</label>
-        <input id="plName" type="text" list="plList" maxlength="80" placeholder="New or existing playlist">
-        <datalist id="plList"></datalist>
+<div id="panel" class="app hidden">
+  <aside class="side">
+    <a class="brand" href="/" title="Back to the site">Admin</a>
+    <nav id="anav" aria-label="Admin sections"></nav>
+    <div style="margin-top:16px;border-top:1px solid var(--line);padding-top:12px">
+      <a class="nav-item" href="/">View site</a>
+      <button class="nav-item" id="logout" type="button" style="width:100%;background:none;border:0;font:inherit;font-weight:600;cursor:pointer;text-align:left">Log out</button>
+    </div>
+  </aside>
+
+  <div class="main">
+    <!-- Music collection -->
+    <section class="pane" id="s-collection">
+      <h1>Music collection</h1>
+      <div class="card">
+        <div class="form" style="justify-content:space-between;margin-bottom:12px"><h2 style="margin:0">Songs <span class="muted" id="count"></span></h2><button class="btn ghost" id="refreshArt" type="button">Refresh artwork</button></div>
+        <label for="songQ" class="hidden">Search songs</label>
+        <input id="songQ" type="search" placeholder="Search songs" style="width:100%;max-width:360px;margin-bottom:12px">
+        <div style="overflow-x:auto"><table><thead><tr><th>Title</th><th>Artist</th><th>Album</th><th>Plays</th><th></th></tr></thead><tbody id="rows"></tbody></table></div>
+        <nav class="pager" id="pager" aria-label="Song pages"></nav>
       </div>
-      <div id="alField" class="form hidden" style="margin-bottom:12px">
-        <label for="alName" class="muted">Album</label><input id="alName" type="text" maxlength="200" placeholder="From tags if blank">
-        <label for="alArtist" class="muted">Artist</label><input id="alArtist" type="text" maxlength="200" placeholder="From tags if blank">
+    </section>
+
+    <!-- Add music -->
+    <section class="pane hidden" id="s-add">
+      <h1>Add music</h1>
+      <div class="card">
+        <fieldset><legend class="muted">Upload as</legend>
+          <label><input type="radio" name="mode" value="singles" checked> Singles</label>
+          <label><input type="radio" name="mode" value="playlist"> Playlist</label>
+          <label><input type="radio" name="mode" value="album"> Album</label>
+        </fieldset>
+        <p class="muted" id="hint" style="margin-top:0"></p>
+        <div id="plField" class="form hidden" style="margin-bottom:12px">
+          <label for="plName" class="muted">Playlist name</label>
+          <input id="plName" type="text" list="plList" maxlength="80" placeholder="New or existing playlist">
+          <datalist id="plList"></datalist>
+        </div>
+        <div id="alField" class="form hidden" style="margin-bottom:12px">
+          <label for="alName" class="muted">Album</label><input id="alName" type="text" maxlength="200" placeholder="From tags if blank">
+          <label for="alArtist" class="muted">Artist</label><input id="alArtist" type="text" maxlength="200" placeholder="From tags if blank">
+        </div>
+        <label class="drop" id="drop" for="files" style="display:block">Drop .mp3 files here, or click to choose<input id="files" type="file" accept=".mp3,audio/mpeg" multiple class="hidden"></label>
+        <p class="msg err" id="upMsg" role="alert"></p>
+        <div class="batch hidden" id="batch" aria-live="polite">
+          <div class="form" style="justify-content:space-between;margin-bottom:8px"><strong id="batchText"></strong><span class="muted" id="batchSub"></span></div>
+          <div class="bar big" role="progressbar" aria-label="Upload progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="batchBarWrap"><i id="batchBar"></i></div>
+          <p class="muted" id="batchSummary" style="margin:8px 0 0"></p>
+        </div>
+        <div id="queue"></div>
       </div>
-      <label class="drop" id="drop" for="files" style="display:block">Drop .mp3 files here, or click to choose<input id="files" type="file" accept=".mp3,audio/mpeg" multiple class="hidden"></label>
-      <p class="msg err" id="upMsg" role="alert"></p>
-      <div id="queue"></div>
     </section>
 
-    <section class="card">
-      <h2>Playlists</h2>
-      <p class="muted" style="margin-top:0">By default a playlist shows a grid of its album covers. Use Change image to set your own.</p>
-      <div id="plRows" class="muted">No playlists yet.</div>
-      <input id="plImg" type="file" accept="image/jpeg,image/png,image/webp" class="hidden">
-      <p class="msg" id="plMsg" role="status"></p>
+    <!-- Playlists -->
+    <section class="pane hidden" id="s-playlists">
+      <h1>Playlists</h1>
+      <div class="card">
+        <p class="muted" style="margin-top:0">By default a playlist shows a grid of its album covers. Use Change image to set your own.</p>
+        <div id="plRows" class="muted">No playlists yet.</div>
+        <input id="plImg" type="file" accept="image/jpeg,image/png,image/webp" class="hidden">
+        <p class="msg" id="plMsg" role="status"></p>
+      </div>
     </section>
 
-    <section class="card">
-      <h2>Request queue</h2>
-      <p class="muted" style="margin-top:0">Songs, albums and artists leave the queue by themselves when a matching song is uploaded. A playlist request leaves when you create a playlist with the same name. You can also remove any request here.</p>
-      <div id="reqRows" class="muted">The queue is empty.</div>
+    <!-- Requests -->
+    <section class="pane hidden" id="s-requests">
+      <h1>Request queue</h1>
+      <div class="card">
+        <p class="muted" style="margin-top:0">Songs, albums and artists leave the queue by themselves when a matching song is uploaded. A playlist request leaves when you create a playlist with the same name. You can also remove any request here.</p>
+        <div id="reqRows" class="muted">The queue is empty.</div>
+      </div>
     </section>
 
-    <section class="card">
-      <div class="form" style="justify-content:space-between;margin-bottom:12px"><h2 style="margin:0">Songs <span class="muted" id="count"></span></h2><button class="btn ghost" id="refreshArt" type="button">Refresh artwork</button></div>
-      <label for="songQ" class="hidden">Search songs</label>
-      <input id="songQ" type="search" placeholder="Search songs" style="width:100%;max-width:360px;margin-bottom:12px">
-      <div style="overflow-x:auto"><table><thead><tr><th>Title</th><th>Artist</th><th>Album</th><th>Plays</th><th></th></tr></thead><tbody id="rows"></tbody></table></div>
-      <nav class="pager" id="pager" aria-label="Song pages"></nav>
+    <!-- General settings -->
+    <section class="pane hidden" id="s-settings">
+      <h1>General settings</h1>
+      <div class="card">
+        <h2>Branding</h2>
+        <div class="form" style="flex-direction:column;align-items:stretch;max-width:520px">
+          <label for="siteName" class="muted">Site name (top left of the site)</label>
+          <input id="siteName" type="text" maxlength="60" placeholder="Music">
+          <label for="tabTitle" class="muted">Browser tab name</label>
+          <input id="tabTitle" type="text" maxlength="80" placeholder="Same as the site name if empty">
+          <span class="muted">Browser icon</span>
+          <div class="form">
+            <img class="favprev hidden" id="favPrev" alt="Current browser icon">
+            <span class="muted" id="favNone">No custom icon</span>
+            <button class="btn ghost" id="favBtn" type="button">Choose image</button>
+            <button class="btn ghost hidden" id="favRm" type="button">Remove</button>
+            <input id="favFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml,image/x-icon,.ico" class="hidden">
+          </div>
+          <span class="muted">PNG, ICO, SVG, JPEG, WebP or GIF up to 512 KB. Square images look best.</span>
+          <div class="form"><button class="btn" id="brandSave" type="button">Save branding</button><span class="msg" id="brandMsg" role="status"></span></div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Advertising</h2>
+        <p class="muted" style="margin-top:0">An ad shows at the top of the front page (Recently added &rsaquo; Songs), above the songs. Write it in HTML, CSS and JavaScript, for example a slider with clickable buttons. Only you can change it. It runs in an isolated frame, so it cannot touch the rest of the site or your admin session. Links open in a new tab; add <code>target="_top"</code> to a link to stay in the app. When the ad is off, the page looks as it did before.</p>
+        <div class="form" style="margin-bottom:12px">
+          <label class="check"><input type="checkbox" id="adOn"> Show the ad on the front page</label>
+          <label for="adH" class="muted">Height (px)</label><input id="adH" type="number" min="60" max="1000" value="340">
+        </div>
+        <label for="adCode" class="muted">Ad code (HTML, CSS and JavaScript)</label>
+        <textarea class="code" id="adCode" spellcheck="false" placeholder="Paste or write your ad here"></textarea>
+        <div class="form" style="margin-top:12px">
+          <button class="btn" id="adSave" type="button">Save advertising</button>
+          <button class="btn ghost" id="adPreviewBtn" type="button">Preview</button>
+          <button class="btn ghost" id="adSample" type="button">Insert sample slider</button>
+          <span class="msg" id="adMsg" role="status"></span>
+        </div>
+        <div id="adPrev" style="margin-top:16px"></div>
+      </div>
     </section>
 
-    <section class="card" style="max-width:520px">
-      <h2>Change password</h2>
-      <form class="form" id="pwForm" style="flex-direction:column;align-items:stretch">
-        <label for="cur" class="muted">Current password</label>
-        <input id="cur" type="password" autocomplete="current-password" required>
-        <label for="nw" class="muted">New password (8+ characters)</label>
-        <input id="nw" type="password" autocomplete="new-password" minlength="8" required>
-        <button class="btn" type="submit">Save password</button>
-      </form>
-      <p class="msg" id="pwMsg" role="status"></p>
+    <!-- Account settings -->
+    <section class="pane hidden" id="s-account">
+      <h1>Account settings</h1>
+      <div class="card" style="max-width:520px">
+        <p class="muted" style="margin-top:0">Signed in as <b>admin</b></p>
+        <button class="linkrow" id="pwOpen" type="button" aria-haspopup="dialog">Change password <span aria-hidden="true">›</span></button>
+        <p class="msg" id="acctMsg" role="status"></p>
+      </div>
     </section>
 
-    <section class="card" style="max-width:520px;border-color:var(--danger)">
-      <h2>Clean database</h2>
-      <p class="muted" style="margin-top:0">Deletes every song, playlist, request, artwork file, play count and reaction. Your admin login is kept.</p>
-      <button class="btn danger" id="cleanBtn" type="button">Clean database…</button>
-      <p class="msg" id="cleanMsg" role="status"></p>
+    <!-- Danger -->
+    <section class="pane hidden" id="s-danger">
+      <h1>Danger</h1>
+      <div class="card" style="max-width:520px;border-color:var(--danger)">
+        <h2>Clean database</h2>
+        <p class="muted" style="margin-top:0">Deletes every song, playlist, request, artwork file, play count and reaction. Your admin login, site name, browser icon and ad are kept.</p>
+        <button class="btn danger" id="cleanBtn" type="button">Clean database…</button>
+        <p class="msg" id="cleanMsg" role="status"></p>
+      </div>
     </section>
   </div>
-
-  <dialog id="cleanDlg" aria-labelledby="cleanT">
-    <form id="cleanForm" class="form" style="flex-direction:column;align-items:stretch">
-      <h2 id="cleanT" style="margin:0;color:var(--danger)">Delete everything?</h2>
-      <p style="margin:0">This permanently deletes <b>every song</b> in storage, all playlists, the request queue, artwork, play counts, hearts, likes and dislikes. It cannot be undone.</p>
-      <label for="cPw" class="muted">Enter password</label>
-      <input id="cPw" type="password" autocomplete="current-password" required>
-      <label for="cWord" class="muted">Write “confirm” to continue</label>
-      <input id="cWord" type="text" autocomplete="off" required>
-      <p class="msg err" id="cMsg" role="alert"></p>
-      <div class="form" style="justify-content:flex-end"><button class="btn ghost" type="button" id="cCancel">Cancel</button><button class="btn danger solid" id="cGo" type="submit" disabled>Delete everything</button></div>
-    </form>
-  </dialog>
 </div>
+
+<dialog id="pwDlg" aria-labelledby="pwT">
+  <form id="pwForm" class="form" style="flex-direction:column;align-items:stretch">
+    <h2 id="pwT" style="margin:0">Change password</h2>
+    <label for="cur" class="muted">Current password</label>
+    <input id="cur" type="password" autocomplete="current-password" required>
+    <label for="nw" class="muted">New password (8+ characters)</label>
+    <input id="nw" type="password" autocomplete="new-password" minlength="8" required>
+    <p class="msg err" id="pwMsg" role="alert"></p>
+    <div class="form" style="justify-content:flex-end"><button class="btn ghost" type="button" id="pwCancel">Cancel</button><button class="btn" type="submit">Save password</button></div>
+  </form>
+</dialog>
+
+<dialog id="cleanDlg" aria-labelledby="cleanT">
+  <form id="cleanForm" class="form" style="flex-direction:column;align-items:stretch">
+    <h2 id="cleanT" style="margin:0;color:var(--danger)">Delete everything?</h2>
+    <p style="margin:0">This permanently deletes <b>every song</b> in storage, all playlists, the request queue, artwork, play counts, hearts, likes and dislikes. It cannot be undone.</p>
+    <label for="cPw" class="muted">Enter password</label>
+    <input id="cPw" type="password" autocomplete="current-password" required>
+    <label for="cWord" class="muted">Write “confirm” to continue</label>
+    <input id="cWord" type="text" autocomplete="off" required>
+    <p class="msg err" id="cMsg" role="alert"></p>
+    <div class="form" style="justify-content:flex-end"><button class="btn ghost" type="button" id="cCancel">Cancel</button><button class="btn danger solid" id="cGo" type="submit" disabled>Delete everything</button></div>
+  </form>
+</dialog>
 <script type="module" src="/admin.js"></script>
 </body>
 </html>

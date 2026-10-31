@@ -1,4 +1,4 @@
-import { artistArt, albumArt, albumName, artistsOf, artistLine, primaryArtist } from "/art.js";
+import { artistArt, albumArt, albumName, artistsOf, artistLine, primaryArtist, adDoc, AD_SANDBOX } from "/art.js";
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const fmt = (s) => { s = Math.floor(s || 0); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); };
@@ -14,10 +14,25 @@ const KEY = { heart: "hearts", like: "likes", dislike: "dislikes" };
 let tracks = [], byId = {}, playlists = [], query = "";
 let view = { ids: [], label: "", pl: null }; // what the main area is showing (what a click on a row plays)
 let queue = [], qi = -1, qLabel = "", ctxPl = null; // what is playing, and the playlist it came from
-let repeat = store.get("rep", 0), left = 0, counted = false;
+let repeat = store.get("rep", 0), left = 0, counted = false, shufKind = "";
 let mine = store.get("mine", {});
 let vid = store.get("vid", null);
 if (!vid) { vid = crypto.randomUUID(); store.set("vid", vid); }
+
+// ---------- site name, tab title, browser icon, front-page ad (set by the admin) ----------
+let site = { ...store.get("site", { name: "Music", title: "", favicon: 0 }), ad: { enabled: false, html: "", height: 340 } };
+const setTip = (sel, text) => { const b = $(sel); b.dataset.tip = text; b.setAttribute("aria-label", text); };
+function applySite() {
+  $("#brand").textContent = site.name;
+  document.title = site.title || site.name;
+  if (site.favicon) $("#favicon").href = `/site/favicon?v=${site.favicon}`;
+}
+function adSlot() {
+  const ad = site.ad;
+  if (!ad || !ad.enabled || !ad.html.trim()) return "";
+  return `<div class="adslot"><iframe class="adframe" title="Advertisement" sandbox="${AD_SANDBOX}" referrerpolicy="no-referrer" style="height:${ad.height}px" srcdoc="${esc(adDoc(ad.html))}"></iframe></div>`;
+}
+applySite();
 
 const art = (src, label, cls = "") =>
   `<span class="art ${cls}" data-i="${esc((label || "?").trim().charAt(0).toUpperCase())}">${src ? `<img loading="lazy" alt="" src="${esc(src)}">` : ""}</span>`;
@@ -25,8 +40,12 @@ document.addEventListener("error", (e) => { if (e.target.tagName === "IMG") e.ta
 
 async function load() {
   try {
-    const [t, p] = await Promise.all([fetch("/api/tracks").then((r) => r.json()), fetch("/api/playlists").then((r) => r.json())]);
+    const [t, p, s] = await Promise.all([
+      fetch("/api/tracks").then((r) => r.json()), fetch("/api/playlists").then((r) => r.json()),
+      fetch("/api/site").then((r) => r.json()).catch(() => null),
+    ]);
     tracks = t; playlists = p;
+    if (s) { site = s; store.set("site", { name: s.name, title: s.title, favicon: s.favicon }); applySite(); }
   } catch { tracks = []; playlists = []; }
   byId = Object.fromEntries(tracks.map((t) => [t.id, t]));
   render();
@@ -82,7 +101,8 @@ function render() {
   renderNav(tab, sub);
   const el = $("#list");
   if (tab === "request") { if (sub === "new") requestForm(el); else requestQueue(el); return; }
-  if (!tracks.length) { el.innerHTML = empty("No music yet. Check back soon."); noView(); return; }
+  const home = tab === "recent" && sub === "songs";
+  if (!tracks.length) { el.innerHTML = (home ? adSlot() : "") + empty("No music yet. Check back soon."); noView(); return; }
   if (a === "artist") artistPage(el, dec(arg));
   else if (a === "playlist") playlistPage(el, dec(arg));
   else if (a === "album") albumPage(el, ...arg.split("/").map(dec));
@@ -102,7 +122,7 @@ function render() {
 function songList(el) {
   const l = tracks.filter(match).sort((x, y) => y.created_at - x.created_at);
   view = { ids: l.map((t) => t.id), label: "Recently added", pl: null };
-  el.innerHTML = l.length ? songTiles(l) : empty("Nothing matches your search.");
+  el.innerHTML = (query ? "" : adSlot()) + (l.length ? songTiles(l) : empty("Nothing matches your search."));
 }
 
 // Most listened / hearted / liked / disliked
@@ -340,7 +360,7 @@ $("#msgOk").addEventListener("click", () => $("#msgDlg").close());
 const shuffled = (a) => { a = [...a]; for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
 const cur = () => byId[audio.dataset.id];
 
-function startQueue(ids, id, label, pl) { queue = [...ids]; qLabel = label; ctxPl = pl; play(id); }
+function startQueue(ids, id, label, pl, kind = "") { queue = [...ids]; qLabel = label; ctxPl = pl; shufKind = kind; play(id); }
 function play(id) {
   const t = byId[id];
   if (!t) return;
@@ -364,7 +384,7 @@ function shuffleIn(kind) {
   else if (kind === "artist") { if (!t) return; const mine = artistsOf(t); ids = tracks.filter((x) => artistsOf(x).some((a) => mine.includes(a))).map((x) => x.id); label = `Shuffling ${mine.join(", ")}`; }
   else { const p = playlists.find((x) => x.id === ctxPl); if (!p) return; ids = p.tracks.filter((i) => byId[i]); label = `Shuffling “${p.name}”`; }
   if (!ids.length) return;
-  queue = shuffled(ids); qLabel = label;
+  queue = shuffled(ids); qLabel = label; shufKind = kind; closeShuf();
   if (queue.length > 1 && queue[0] === audio.dataset.id) [queue[0], queue[1]] = [queue[1], queue[0]];
   play(queue[0]);
 }
@@ -372,8 +392,28 @@ function paintShuffle() {
   const t = cur(), p = playlists.find((x) => x.id === ctxPl);
   $("#sArtist").disabled = !t;
   $("#sList").disabled = !p;
+  $("#sArtist").title = t ? "" : "Play a song first";
   $("#sList").title = p ? `Random song from “${p.name}”` : "Play a song from a playlist to use this";
+  $("#shuf").classList.toggle("on", !!shufKind);
+  setTip("#shuf", shufKind ? qLabel : "Shuffle");
 }
+
+// the slide-up menu that lets you choose what to shuffle
+const shufBtn = $("#shuf"), shufMenu = $("#shufMenu");
+function openShuf(open) {
+  shufMenu.classList.toggle("open", open);
+  shufBtn.setAttribute("aria-expanded", open);
+  if (open) { paintShuffle(); (shufMenu.querySelector(".sitem:not(:disabled)") || shufBtn).focus(); }
+}
+const closeShuf = () => openShuf(false);
+shufBtn.addEventListener("click", (e) => { e.stopPropagation(); openShuf(!shufMenu.classList.contains("open")); });
+document.addEventListener("click", (e) => { if (!e.target.closest(".shufwrap")) closeShuf(); });
+shufMenu.addEventListener("keydown", (e) => {
+  const items = [...shufMenu.querySelectorAll(".sitem:not(:disabled)")], i = items.indexOf(document.activeElement);
+  if (e.key === "ArrowRight" || e.key === "ArrowDown") { e.preventDefault(); if (items.length) items[(i + 1) % items.length].focus(); }
+  else if (e.key === "ArrowLeft" || e.key === "ArrowUp") { e.preventDefault(); if (items.length) items[(i - 1 + items.length) % items.length].focus(); }
+  else if (e.key === "Escape") { closeShuf(); shufBtn.focus(); }
+});
 function markRows() { document.querySelectorAll("#list [data-id]").forEach((r) => r.classList.toggle("on", r.dataset.id === audio.dataset.id)); }
 
 function renderQueue() {
@@ -393,6 +433,7 @@ function paintReact() {
     $("#" + b).classList.toggle("on", !!m[k]);
     $("#" + b).setAttribute("aria-pressed", !!m[k]);
     $("#" + c).textContent = t ? t[KEY[k]] : 0;
+    setTip("#" + b, { heart: ["Heart this song", "Remove heart"], like: ["Like", "Remove like"], dislike: ["Dislike", "Remove dislike"] }[k][m[k] ? 1 : 0]);
   });
 }
 async function react(kind) {
@@ -420,7 +461,7 @@ $("#list").addEventListener("click", (e) => {
   if (b) {
     if (!view.ids.length) return;
     if (b.dataset.act === "play") startQueue(view.ids, view.ids[0], view.label, view.pl);
-    else { const q = shuffled(view.ids); startQueue(q, q[0], `Shuffling ${view.label}`, view.pl); }
+    else { const q = shuffled(view.ids); startQueue(q, q[0], `Shuffling ${view.label}`, view.pl, "list"); }
     return;
   }
   const r = e.target.closest(".row, .tile[data-id]");
@@ -441,9 +482,9 @@ $("#sList").addEventListener("click", () => shuffleIn("playlist"));
 $("#seek").addEventListener("input", (e) => { if (audio.duration) audio.currentTime = (e.target.value / 100) * audio.duration; });
 
 function paintRepeat() {
-  $("#repT").textContent = repeat ? repeat + "×" : "Off";
+  $("#repT").textContent = repeat ? String(repeat) : "";
   $("#rep").classList.toggle("on", !!repeat);
-  $("#rep").setAttribute("aria-label", repeat ? `Repeat: play each song ${repeat} times` : "Repeat: off");
+  setTip("#rep", repeat ? `Repeat: each song ${repeat} times` : "Repeat: off");
 }
 $("#rep").addEventListener("click", () => {
   repeat = repeat === 0 ? 2 : repeat === 2 ? 3 : 0;
@@ -456,7 +497,7 @@ volEl.addEventListener("input", () => { audio.volume = +volEl.value; audio.muted
 $("#mute").addEventListener("click", () => { audio.muted = !audio.muted; paintVol(); });
 function paintVol() {
   $("#muteI").innerHTML = `<use href="#i-${audio.muted || audio.volume === 0 ? "mute" : "vol"}"/>`;
-  $("#mute").setAttribute("aria-label", audio.muted ? "Unmute" : "Mute");
+  setTip("#mute", audio.muted ? "Unmute" : "Mute");
 }
 
 // Up next and Lyrics share the right-hand side; opening one closes the other.
@@ -522,8 +563,8 @@ audio.addEventListener("timeupdate", () => {
     fetch("/api/play/" + t.id, { method: "POST" }).catch(() => {});
   }
 });
-audio.addEventListener("play", () => { $("#pp").setAttribute("aria-label", "Pause"); $("#ppi").innerHTML = '<path d="M6 4h4v16H6zM14 4h4v16h-4z"/>'; });
-audio.addEventListener("pause", () => { $("#pp").setAttribute("aria-label", "Play"); $("#ppi").innerHTML = '<path d="M7 4v16l13-8z"/>'; });
+audio.addEventListener("play", () => { setTip("#pp", "Pause"); $("#ppi").innerHTML = '<path d="M6 4h4v16H6zM14 4h4v16h-4z"/>'; });
+audio.addEventListener("pause", () => { setTip("#pp", "Play"); $("#ppi").innerHTML = '<path d="M7 4v16l13-8z"/>'; });
 audio.addEventListener("ended", () => {
   if (left > 0) { left--; audio.currentTime = 0; audio.play(); } else step(1);
 });
@@ -534,6 +575,11 @@ if ("mediaSession" in navigator) {
 
 // keep page padding and the Up next panel clear of the player bar
 new ResizeObserver(() => document.documentElement.style.setProperty("--ph", $("#player").offsetHeight + "px")).observe($("#player"));
+
+// the site name (top left) goes home
+$("#brand").addEventListener("click", (e) => {
+  if (!location.hash || location.hash === "#recent") { e.preventDefault(); $("#q").value = ""; query = ""; render(); window.scrollTo(0, 0); }
+});
 
 // ---------- admin gear + login dialog ----------
 $("#gear").addEventListener("click", async () => {

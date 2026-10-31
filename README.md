@@ -36,8 +36,19 @@ A song that is already stored (same file contents) is never uploaded twice. In p
 
 Layout: a menu on the left; the active tab opens its sub tabs under it. Songs are shown as tiles. Tabs: recently added (with Songs, Artists, Albums and Playlists underneath, newest first), most listened, artists,
 playlists, and the top 50 most hearted, top 20 most liked and top 20 most disliked songs. Playlist covers show a 3x3
-grid of album art (9+ albums) or a 2x2 grid. Player: heart, like, dislike,
-volume, repeat (each song 2x or 3x), shuffle (all songs, same artist, same playlist) and an Up next list.
+grid of album art (9+ albums) or a 2x2 grid. Player: heart, like and dislike beside the song;
+shuffle (click for a slide-up menu: all songs, this artist, this playlist), previous, play, next and repeat (each song 2x or 3x) in the centre;
+lyrics, Up next and volume on the right. Buttons are icons with a name on hover.
+
+## Admin sections
+
+The admin page has a menu on the left: **Music collection** (30 songs per page), **Add music** (with an overall "10 out of 30" progress bar),
+**Playlists**, **Requests**, **General settings**, **Account settings** (the Change password window opens only when you click it) and **Danger** (clean database).
+
+**General settings > Branding** changes the site name (top left of the site, click it to go home), the browser tab name and the browser icon.
+**General settings > Advertising** lets only the admin write an ad in HTML, CSS and JavaScript. It shows at the top of the front page
+(Recently added > Songs), above the songs, only while it is switched on. It runs in a sandboxed frame, so it cannot reach the rest of the
+site or the admin session. Links open in a new tab; add `target="_top"` to a link to stay in the app.
 
 ## Songs with several artists
 

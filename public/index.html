@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Music</title>
+<link rel="icon" id="favicon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Ctext y=%27.9em%27 font-size=%2790%27%3E🎵%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -17,12 +18,14 @@
   <symbol id="i-mute" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4zM23 9l-6 6M17 9l6 6"/></symbol>
   <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
   <symbol id="i-lyrics" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2zM8 8h8M8 12h5"/></symbol>
+  <symbol id="i-mic" viewBox="0 0 24 24"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3zM19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8"/></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z"/></symbol>
   <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
 </svg>
 
 <div class="app">
   <aside class="side">
-    <div class="brand">Music</div>
+    <a class="brand" id="brand" href="#recent" aria-label="Home">Music</a>
     <nav id="nav" aria-label="Browse"></nav>
   </aside>
   <div class="main">
@@ -46,28 +49,35 @@
 </aside>
 
 <div class="player" id="player">
-  <div class="info"><span id="pc"></span><span class="txt"><b id="pt">Nothing playing</b><br><span class="muted" id="pa">Pick a song</span></span></div>
-  <div class="mid">
+  <div class="p-left">
+    <div class="info"><span id="pc"></span><span class="txt"><b id="pt">Nothing playing</b><br><span class="muted" id="pa">Pick a song</span></span></div>
+    <div class="reacts">
+      <button class="ib react tip" id="bh" data-tip="Heart this song" aria-label="Heart" aria-pressed="false"><svg><use href="#i-heart"/></svg><small id="ch">0</small></button>
+      <button class="ib react tip" id="bl" data-tip="Like" aria-label="Like" aria-pressed="false"><svg><use href="#i-up"/></svg><small id="cl">0</small></button>
+      <button class="ib react tip" id="bd" data-tip="Dislike" aria-label="Dislike" aria-pressed="false"><svg><use href="#i-down"/></svg><small id="cd">0</small></button>
+    </div>
+  </div>
+  <div class="p-mid">
     <div class="ctl">
-      <button class="ib react" id="bh" aria-label="Heart" aria-pressed="false" title="Heart"><svg><use href="#i-heart"/></svg><small id="ch">0</small></button>
-      <button class="ib react" id="bl" aria-label="Like" aria-pressed="false" title="Like"><svg><use href="#i-up"/></svg><small id="cl">0</small></button>
-      <button class="ib react" id="bd" aria-label="Dislike" aria-pressed="false" title="Dislike"><svg><use href="#i-down"/></svg><small id="cd">0</small></button>
-      <button class="ib" id="prev" aria-label="Previous"><svg class="fill" viewBox="0 0 24 24"><path d="M6 5h2v14H6zM20 5v14L9 12z"/></svg></button>
-      <button class="ib play" id="pp" aria-label="Play"><svg class="fill" viewBox="0 0 24 24" id="ppi"><path d="M7 4v16l13-8z"/></svg></button>
-      <button class="ib" id="next" aria-label="Next"><svg class="fill" viewBox="0 0 24 24"><path d="M16 5h2v14h-2zM4 5v14l11-7z"/></svg></button>
+      <div class="shufwrap">
+        <button class="ib tip" id="shuf" data-tip="Shuffle" aria-label="Shuffle" aria-haspopup="menu" aria-expanded="false" aria-controls="shufMenu"><svg><use href="#i-shuffle"/></svg></button>
+        <div class="smenu" id="shufMenu" role="menu" aria-label="Choose what to shuffle">
+          <button class="sitem" id="sAll" role="menuitem"><svg><use href="#i-shuffle"/></svg>All songs</button>
+          <button class="sitem" id="sArtist" role="menuitem"><svg><use href="#i-user"/></svg>This artist</button>
+          <button class="sitem" id="sList" role="menuitem"><svg><use href="#i-list"/></svg>This playlist</button>
+        </div>
+      </div>
+      <button class="ib tip" id="prev" data-tip="Previous" aria-label="Previous"><svg class="fill" viewBox="0 0 24 24"><path d="M6 5h2v14H6zM20 5v14L9 12z"/></svg></button>
+      <button class="ib play tip" id="pp" data-tip="Play" aria-label="Play"><svg class="fill" viewBox="0 0 24 24" id="ppi"><path d="M7 4v16l13-8z"/></svg></button>
+      <button class="ib tip" id="next" data-tip="Next" aria-label="Next"><svg class="fill" viewBox="0 0 24 24"><path d="M16 5h2v14h-2zM4 5v14l11-7z"/></svg></button>
+      <button class="ib tip" id="rep" data-tip="Repeat: off" aria-label="Repeat: off"><svg><use href="#i-repeat"/></svg><span class="badge" id="repT"></span></button>
     </div>
     <div class="seek"><span class="muted" id="cur">0:00</span><input id="seek" type="range" min="0" max="100" value="0" step="0.1" aria-label="Seek"><span class="muted" id="dur">0:00</span></div>
   </div>
-  <div class="right">
-    <button class="pill" id="lybtn" aria-expanded="false" aria-controls="lyrics" title="Show lyrics that follow the song"><svg><use href="#i-lyrics"/></svg>Lyrics</button>
-    <div class="shuf" role="group" aria-label="Shuffle">
-      <button class="pill" id="sAll" title="Play a random song from the whole library"><svg><use href="#i-shuffle"/></svg>All</button>
-      <button class="pill" id="sArtist" title="Random song from this artist"><svg><use href="#i-shuffle"/></svg>Artist</button>
-      <button class="pill" id="sList" title="Random song from this playlist"><svg><use href="#i-shuffle"/></svg>Playlist</button>
-    </div>
-    <button class="pill" id="rep" aria-label="Repeat: off" title="Repeat each song"><svg><use href="#i-repeat"/></svg><span id="repT">Off</span></button>
-    <div class="vol"><button class="ib" id="mute" aria-label="Mute"><svg id="muteI"><use href="#i-vol"/></svg></button><input id="vol" type="range" min="0" max="1" step="0.01" value="1" aria-label="Volume"></div>
-    <button class="ib" id="qbtn" aria-label="Up next list" aria-expanded="false" title="Up next"><svg><use href="#i-list"/></svg></button>
+  <div class="p-right">
+    <button class="ib tip" id="lybtn" data-tip="Lyrics" aria-label="Lyrics" aria-expanded="false" aria-controls="lyrics"><svg><use href="#i-mic"/></svg></button>
+    <button class="ib tip" id="qbtn" data-tip="Up next" aria-label="Up next list" aria-expanded="false" aria-controls="upnext"><svg><use href="#i-list"/></svg></button>
+    <div class="vol"><button class="ib tip" id="mute" data-tip="Mute" aria-label="Mute"><svg id="muteI"><use href="#i-vol"/></svg></button><input id="vol" type="range" min="0" max="1" step="0.01" value="1" aria-label="Volume"></div>
   </div>
 </div>
 <audio id="audio" preload="none"></audio>

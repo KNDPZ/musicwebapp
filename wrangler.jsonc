@@ -7,7 +7,7 @@
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
-    "run_worker_first": ["/api/*", "/audio/*", "/art/*"]
+    "run_worker_first": ["/api/*", "/audio/*", "/art/*", "/site/*"]
   },
   // No IDs on purpose: Wrangler creates these on first deploy and keeps them linked.
   "r2_buckets": [{ "binding": "MUSIC" }],
