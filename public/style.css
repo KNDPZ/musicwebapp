@@ -104,3 +104,13 @@ dialog::backdrop{background:rgba(0,0,0,.65)}
 @media (max-width:640px){.wrap{padding:16px}.player .right{justify-content:flex-start}.vol input{width:70px}}
 fieldset{border:1px solid var(--line2);border-radius:12px;margin:0 0 12px;padding:8px 14px}
 fieldset label{display:inline-flex;align-items:center;gap:8px;min-height:44px;margin-right:16px;cursor:pointer}
+
+/* ---- v4 ---- */
+.tabs.sub .tab{min-height:40px;font-size:14px}
+.art.mosaic{display:grid;place-items:stretch;gap:2px;background:var(--bg)}
+.art.mosaic::before{display:none}
+.art.m4{grid-template:repeat(2,1fr)/repeat(2,1fr)}
+.art.m9{grid-template:repeat(3,1fr)/repeat(3,1fr)}
+.art .c{display:block;position:relative;min-width:0;min-height:0;background:var(--line2);overflow:hidden}
+.art .c img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.btn.danger.solid{background:var(--danger);border-color:var(--danger);color:#131211}

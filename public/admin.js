@@ -150,6 +150,25 @@ $("#refreshArt").addEventListener("click", async (e) => {
   b.textContent = "Refresh artwork"; b.disabled = false;
 });
 
+const cleanDlg = $("#cleanDlg");
+const cCheck = () => ($("#cGo").disabled = !($("#cPw").value && $("#cWord").value.trim() === "confirm"));
+$("#cleanBtn").addEventListener("click", () => { $("#cleanForm").reset(); $("#cMsg").textContent = ""; cCheck(); cleanDlg.showModal(); $("#cPw").focus(); });
+$("#cCancel").addEventListener("click", () => cleanDlg.close());
+$("#cPw").addEventListener("input", cCheck);
+$("#cWord").addEventListener("input", cCheck);
+$("#cleanForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const go = $("#cGo"); go.disabled = true; go.textContent = "Deleting…";
+  const r = await post("/api/admin/clean", { password: $("#cPw").value, confirm: $("#cWord").value });
+  const j = await r.json().catch(() => ({}));
+  go.textContent = "Delete everything";
+  if (r.ok) {
+    cleanDlg.close(); $("#queue").innerHTML = ""; $("#upMsg").textContent = "";
+    $("#cleanMsg").textContent = `Done. ${j.removed} stored files deleted and the library is empty.`;
+    refresh(); loadPlaylists();
+  } else { $("#cMsg").textContent = j.error || "Something went wrong."; cCheck(); }
+});
+
 const drop = $("#drop");
 $("#files").addEventListener("change", (e) => { handle(e.target.files); e.target.value = ""; });
 ["dragenter", "dragover"].forEach((n) => drop.addEventListener(n, (e) => { e.preventDefault(); drop.classList.add("over"); }));

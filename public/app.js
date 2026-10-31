@@ -33,15 +33,27 @@ async function load() {
 }
 
 // ---------- routing ----------
+const SUBS = { songs: "Songs", artists: "Artists", albums: "Albums", playlists: "Playlists" };
+const LIMIT = { top: 100, hearts: 50, likes: 20, dislikes: 20 };
+const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+const dec = (s) => { try { return decodeURIComponent(s); } catch { return s; } };
+const enc = encodeURIComponent;
 function parse() {
   const raw = location.hash.slice(1) || "recent", i = raw.indexOf("/");
-  return { a: i < 0 ? raw : raw.slice(0, i), arg: i < 0 ? "" : decodeURIComponent(raw.slice(i + 1)) };
+  return { a: i < 0 ? raw : raw.slice(0, i), arg: i < 0 ? "" : raw.slice(i + 1) };
 }
 function renderTabs(active) {
   $("#tabs").innerHTML = Object.entries(TABS).map(([k, v]) =>
     `<a class="tab" href="#${k}"${k === active ? ' aria-current="page"' : ""}>${v}</a>`).join("");
 }
+function renderSub(sub) {
+  const el = $("#subtabs");
+  el.classList.toggle("hidden", !sub);
+  el.innerHTML = sub ? Object.entries(SUBS).map(([k, v]) =>
+    `<a class="tab" href="#recent${k === "songs" ? "" : "/" + k}"${k === sub ? ' aria-current="page"' : ""}>${v}</a>`).join("") : "";
+}
 const match = (t) => !query || `${t.title} ${t.artist} ${albumName(t)}`.toLowerCase().includes(query);
+const latest = (l) => Math.max(0, ...l.map((t) => t.created_at));
 
 function row(t, i, extra = "", cover = false) {
   return `<button class="row" data-id="${t.id}"><span class="n">${cover ? art(albumArt(t), albumName(t) || t.title) : i}</span>
@@ -50,48 +62,86 @@ function row(t, i, extra = "", cover = false) {
 }
 const empty = (msg) => `<div class="empty">${msg}</div>`;
 const actions = () => `<div class="form" style="margin:12px 0"><button class="btn" data-act="play">Play</button><button class="btn ghost" data-act="shuf">Shuffle</button></div>`;
+const noView = () => { view = { ids: [], label: "", pl: null }; };
 
 function render() {
   const { a, arg } = parse();
-  const tab = a === "artist" ? "artists" : a === "playlist" ? "playlists" : TABS[a] ? a : "recent";
-  renderTabs(tab);
+  const tab = a === "artist" ? "artists" : a === "playlist" ? "playlists" : a === "album" ? "recent" : has(TABS, a) ? a : "recent";
+  const sub = tab !== "recent" ? null : a === "album" ? "albums" : has(SUBS, arg) ? arg : "songs";
+  renderTabs(tab); renderSub(sub);
   const el = $("#list");
-  if (!tracks.length) { el.innerHTML = empty("No music yet. Check back soon."); view = { ids: [], label: "", pl: null }; return; }
-  if (a === "artist") artistPage(el, arg);
-  else if (a === "playlist") playlistPage(el, arg);
-  else if (tab === "artists") artistGrid(el);
-  else if (tab === "playlists") playlistGrid(el);
+  if (!tracks.length) { el.innerHTML = empty("No music yet. Check back soon."); noView(); return; }
+  if (a === "artist") artistPage(el, dec(arg));
+  else if (a === "playlist") playlistPage(el, dec(arg));
+  else if (a === "album") albumPage(el, ...arg.split("/").map(dec));
+  else if (tab === "recent") {
+    if (sub === "artists") artistGrid(el, true);
+    else if (sub === "albums") albumGrid(el);
+    else if (sub === "playlists") playlistGrid(el, true);
+    else songList(el);
+  }
+  else if (tab === "artists") artistGrid(el, false);
+  else if (tab === "playlists") playlistGrid(el, false);
   else listView(el, tab);
   markRows();
 }
 
-function listView(el, tab) {
-  let l = tracks.filter(match), extra = () => "";
-  if (tab === "top") { l.sort((x, y) => y.plays - x.plays || y.created_at - x.created_at); extra = (t) => plural(t.plays, "play"); }
-  else if (KEY[tab.slice(0, -1)]) {
-    const k = tab; // hearts | likes | dislikes
-    l = l.filter((t) => t[k] > 0).sort((x, y) => y[k] - x[k] || y.created_at - x.created_at);
-    extra = (t) => plural(t[k], k.slice(0, -1));
-  } else l.sort((x, y) => y.created_at - x.created_at);
-  l = l.slice(0, 100);
-  view = { ids: l.map((t) => t.id), label: TABS[tab], pl: null };
-  el.innerHTML = l.length ? l.map((t, i) => row(t, i + 1, extra(t), true)).join("")
-    : empty(tab === "hearts" || tab === "likes" || tab === "dislikes" ? "Nothing here yet. Songs show up once someone reacts to them." : "Nothing matches your search.");
+// Recently added > Songs: every song, newest first
+function songList(el) {
+  const l = tracks.filter(match).sort((x, y) => y.created_at - x.created_at);
+  view = { ids: l.map((t) => t.id), label: "Recently added", pl: null };
+  el.innerHTML = l.length ? l.map((t, i) => row(t, i + 1, "", true)).join("") : empty("Nothing matches your search.");
 }
 
-function artistGrid(el) {
+// Most listened / hearted / liked / disliked
+function listView(el, tab) {
+  let l = tracks.filter(match), extra;
+  if (tab === "top") { l.sort((x, y) => y.plays - x.plays || y.created_at - x.created_at); extra = (t) => plural(t.plays, "play"); }
+  else {
+    l = l.filter((t) => t[tab] > 0).sort((x, y) => y[tab] - x[tab] || y.created_at - x.created_at);
+    extra = (t) => plural(t[tab], tab.slice(0, -1));
+  }
+  l = l.slice(0, LIMIT[tab]);
+  view = { ids: l.map((t) => t.id), label: TABS[tab], pl: null };
+  const head = tab === "top" ? "" : `<p class="muted" style="margin:0 0 8px">Top ${LIMIT[tab]} ${TABS[tab].toLowerCase()}</p>`;
+  el.innerHTML = l.length ? head + l.map((t, i) => row(t, i + 1, extra(t), true)).join("")
+    : empty(tab === "top" ? "Nothing matches your search." : "Nothing here yet. Songs show up once someone reacts to them.");
+}
+
+function artistGrid(el, recent) {
   const by = {};
   tracks.filter(match).forEach((t) => (by[t.artist] ??= []).push(t));
-  const names = Object.keys(by).sort((a, b) => a.localeCompare(b));
-  view = { ids: [], label: "", pl: null };
+  const names = Object.keys(by).sort(recent ? (x, y) => latest(by[y]) - latest(by[x]) || x.localeCompare(y) : (x, y) => x.localeCompare(y));
+  noView();
   el.innerHTML = names.length ? `<div class="grid">${names.map((n) =>
-    `<a class="tile" href="#artist/${encodeURIComponent(n)}">${art(artistArt(n), n)}<b>${esc(n)}</b><span class="muted">${plural(by[n].length, "song")}</span></a>`).join("")}</div>`
+    `<a class="tile" href="#artist/${enc(n)}">${art(artistArt(n), n)}<b>${esc(n)}</b><span class="muted">${plural(by[n].length, "song")}</span></a>`).join("")}</div>`
     : empty("Nothing matches your search.");
+}
+
+function albumGrid(el) {
+  const by = {};
+  tracks.filter(match).forEach((t) => { if (albumName(t)) (by[t.artist + "\u0000" + albumName(t)] ??= []).push(t); });
+  const keys = Object.keys(by).sort((x, y) => latest(by[y]) - latest(by[x]) || x.localeCompare(y));
+  noView();
+  el.innerHTML = keys.length ? `<div class="grid">${keys.map((k) => {
+    const f = by[k][0], al = albumName(f);
+    return `<a class="tile sq" href="#album/${enc(f.artist)}/${enc(al)}">${art(albumArt(f), al)}<b>${esc(al)}</b><span class="muted">${esc(f.artist)}</span></a>`;
+  }).join("")}</div>` : empty("No albums yet. Albums appear when songs have an album tag.");
+}
+
+function albumPage(el, artist, album) {
+  const l = tracks.filter((t) => t.artist === artist && albumName(t) === album)
+    .sort((x, y) => (x.track_no || 999) - (y.track_no || 999) || x.title.localeCompare(y.title));
+  if (!l.length) { el.innerHTML = `<a class="back" href="#recent/albums">← Albums</a>` + empty("Album not found."); noView(); return; }
+  view = { ids: l.map((t) => t.id), label: album, pl: null };
+  el.innerHTML = `<a class="back" href="#recent/albums">← Albums</a>
+    <div class="hero">${art(albumArt(l[0]), album)}<div><h1>${esc(album)}</h1><span class="muted"><a href="#artist/${enc(artist)}">${esc(artist)}</a> · ${plural(l.length, "song")}</span>${actions()}</div></div>
+    ${l.map((t, i) => row(t, t.track_no || i + 1)).join("")}`;
 }
 
 function artistPage(el, name) {
   const ts = tracks.filter((t) => t.artist === name);
-  if (!ts.length) { el.innerHTML = `<a class="back" href="#artists">← All artists</a>` + empty("Artist not found."); return; }
+  if (!ts.length) { el.innerHTML = `<a class="back" href="#artists">← All artists</a>` + empty("Artist not found."); noView(); return; }
   const groups = {};
   ts.forEach((t) => (groups[albumName(t)] ??= []).push(t));
   const names = Object.keys(groups).sort((a, b) => (a === "" ? 1 : b === "" ? -1 : a.localeCompare(b)));
@@ -107,22 +157,35 @@ function artistPage(el, name) {
     <div class="hero">${art(artistArt(name), name, "round")}<div><h1>${esc(name)}</h1><span class="muted">${plural(ts.length, "song")}${albums ? " · " + plural(albums, "album") : ""}</span>${actions()}</div></div>${body}`;
 }
 
-function playlistGrid(el) {
-  const l = playlists.filter((p) => !query || p.name.toLowerCase().includes(query));
-  view = { ids: [], label: "", pl: null };
-  el.innerHTML = l.length ? `<div class="grid">${l.map((p) => {
-    const first = byId[p.tracks.find((i) => byId[i])];
-    return `<a class="tile sq" href="#playlist/${encodeURIComponent(p.id)}">${art(first ? albumArt(first) : "", p.name)}<b>${esc(p.name)}</b><span class="muted">${plural(p.tracks.filter((i) => byId[i]).length, "song")}</span></a>`;
-  }).join("")}</div>` : empty("No playlists yet.");
+// Playlist cover: 9 different album covers when the playlist has 9+ albums, otherwise a 4-cover grid.
+function mosaic(p) {
+  const seen = new Set(), urls = [];
+  for (const id of p.tracks) {
+    const t = byId[id]; if (!t) continue;
+    const k = albumName(t) && !/^unknown/i.test(t.artist) ? `a|${t.artist}|${albumName(t)}` : `t|${t.id}`;
+    if (!seen.has(k)) { seen.add(k); urls.push(albumArt(t)); }
+  }
+  if (urls.length < 2) return art(urls[0] || "", p.name);
+  const cells = urls.length >= 9 ? urls.slice(0, 9) : Array.from({ length: 4 }, (_, i) => urls[i % urls.length]);
+  return `<span class="art mosaic ${cells.length === 9 ? "m9" : "m4"}">${cells.map((u) => `<i class="c"><img loading="lazy" alt="" src="${esc(u)}"></i>`).join("")}</span>`;
+}
+
+function playlistGrid(el, recent) {
+  let l = playlists.filter((p) => !query || p.name.toLowerCase().includes(query));
+  if (recent) l = [...l].sort((x, y) => (y.updated_at || y.created_at) - (x.updated_at || x.created_at));
+  noView();
+  el.innerHTML = l.length ? `<div class="grid">${l.map((p) =>
+    `<a class="tile sq" href="#playlist/${enc(p.id)}">${mosaic(p)}<b>${esc(p.name)}</b><span class="muted">${plural(p.tracks.filter((i) => byId[i]).length, "song")}</span></a>`).join("")}</div>`
+    : empty("No playlists yet.");
 }
 
 function playlistPage(el, id) {
   const p = playlists.find((x) => x.id === id);
-  if (!p) { el.innerHTML = `<a class="back" href="#playlists">← All playlists</a>` + empty("Playlist not found."); return; }
+  if (!p) { el.innerHTML = `<a class="back" href="#playlists">← All playlists</a>` + empty("Playlist not found."); noView(); return; }
   const l = p.tracks.map((i) => byId[i]).filter(Boolean);
   view = { ids: l.map((t) => t.id), label: `Playlist “${p.name}”`, pl: p.id };
   el.innerHTML = `<a class="back" href="#playlists">← All playlists</a>
-    <div class="hero">${art(l[0] ? albumArt(l[0]) : "", p.name, "")}<div><h1>${esc(p.name)}</h1><span class="muted">${plural(l.length, "song")}</span>${actions()}</div></div>
+    <div class="hero">${mosaic(p)}<div><h1>${esc(p.name)}</h1><span class="muted">${plural(l.length, "song")}</span>${actions()}</div></div>
     ${l.map((t, i) => row(t, i + 1, "", true)).join("")}`;
 }
 

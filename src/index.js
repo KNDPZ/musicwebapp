@@ -181,10 +181,13 @@ async function api(req, env, url) {
   }
   if (path === "/api/playlists" && m === "GET") {
     const pls = (await DB.prepare("SELECT id, name, created_at FROM playlists ORDER BY created_at DESC").all()).results;
-    const links = (await DB.prepare("SELECT playlist_id, track_id FROM playlist_tracks ORDER BY added_at, rowid").all()).results;
-    const by = {};
-    links.forEach((l) => (by[l.playlist_id] ??= []).push(l.track_id));
-    return json(pls.map((p) => ({ ...p, tracks: by[p.id] || [] })));
+    const links = (await DB.prepare("SELECT playlist_id, track_id, added_at FROM playlist_tracks ORDER BY added_at, rowid").all()).results;
+    const by = {}, upd = {};
+    links.forEach((l) => {
+      (by[l.playlist_id] ??= []).push(l.track_id);
+      upd[l.playlist_id] = Math.max(upd[l.playlist_id] || 0, l.added_at);
+    });
+    return json(pls.map((p) => ({ ...p, updated_at: Math.max(p.created_at, upd[p.id] || 0), tracks: by[p.id] || [] })));
   }
   if ((x = path.match(/^\/api\/play\/([\w-]+)$/)) && m === "POST") {
     await DB.prepare("UPDATE tracks SET plays = plays + 1 WHERE id = ?").bind(x[1]).run();
@@ -337,6 +340,33 @@ async function api(req, env, url) {
         .bind(clean(b.title) || "Untitled", clean(b.artist) || "Unknown Artist", clean(b.album), x[1]).run();
       return json({ ok: true });
     }
+  }
+  if (path === "/api/admin/clean" && m === "POST") {
+    // Wipe the whole library: every stored file (songs and artwork) plus tracks, playlists, plays and reactions.
+    // Requires the admin password and the word "confirm". The admin login itself is kept.
+    const ip = req.headers.get("CF-Connecting-IP") || "unknown";
+    await DB.prepare("DELETE FROM attempts WHERE ts < ?").bind(Date.now() - 900000).run();
+    const { n } = await DB.prepare("SELECT COUNT(*) AS n FROM attempts WHERE ip = ?").bind(ip).first();
+    if (n >= 5) return json({ error: "Too many failed attempts. Try again in 15 minutes." }, 429);
+    const b = await req.json().catch(() => ({}));
+    if (String(b.confirm ?? "").trim() !== "confirm") return json({ error: 'Type "confirm" to continue.' }, 400);
+    const row = await DB.prepare("SELECT salt, hash FROM admin WHERE id = 'admin'").first();
+    if (!safeEq(await pbkdf2(String(b.password ?? ""), row.salt), row.hash)) {
+      await DB.prepare("INSERT INTO attempts (ip, ts) VALUES (?, ?)").bind(ip, Date.now()).run();
+      return json({ error: "Wrong password." }, 403);
+    }
+    let cursor, removed = 0;
+    do {
+      const l = await env.MUSIC.list({ cursor, limit: 1000 });
+      const keys = l.objects.map((o) => o.key);
+      if (keys.length) { await env.MUSIC.delete(keys); removed += keys.length; }
+      cursor = l.truncated ? l.cursor : undefined;
+    } while (cursor);
+    await DB.batch([
+      DB.prepare("DELETE FROM playlist_tracks"), DB.prepare("DELETE FROM playlists"),
+      DB.prepare("DELETE FROM reactions"), DB.prepare("DELETE FROM tracks"),
+    ]);
+    return json({ ok: true, removed });
   }
   if (path === "/api/admin/password" && m === "POST") {
     const b = await req.json().catch(() => ({}));

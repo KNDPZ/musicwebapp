@@ -71,7 +71,27 @@
       </form>
       <p class="msg" id="pwMsg" role="status"></p>
     </section>
+
+    <section class="card" style="max-width:520px;border-color:var(--danger)">
+      <h2>Clean database</h2>
+      <p class="muted" style="margin-top:0">Deletes every song, playlist, artwork file, play count and reaction. Your admin login is kept.</p>
+      <button class="btn danger" id="cleanBtn" type="button">Clean database…</button>
+      <p class="msg" id="cleanMsg" role="status"></p>
+    </section>
   </div>
+
+  <dialog id="cleanDlg" aria-labelledby="cleanT">
+    <form id="cleanForm" class="form" style="flex-direction:column;align-items:stretch">
+      <h2 id="cleanT" style="margin:0;color:var(--danger)">Delete everything?</h2>
+      <p style="margin:0">This permanently deletes <b>every song</b> in storage, all playlists, artwork, play counts, hearts, likes and dislikes. It cannot be undone.</p>
+      <label for="cPw" class="muted">Enter password</label>
+      <input id="cPw" type="password" autocomplete="current-password" required>
+      <label for="cWord" class="muted">Write “confirm” to continue</label>
+      <input id="cWord" type="text" autocomplete="off" required>
+      <p class="msg err" id="cMsg" role="alert"></p>
+      <div class="form" style="justify-content:flex-end"><button class="btn ghost" type="button" id="cCancel">Cancel</button><button class="btn danger solid" id="cGo" type="submit" disabled>Delete everything</button></div>
+    </form>
+  </dialog>
 </div>
 <script type="module" src="/admin.js"></script>
 </body>

@@ -34,8 +34,15 @@ A song that is already stored (same file contents) is never uploaded twice. In p
 
 ## Listener features
 
-Tabs: recently added, most listened, artists, playlists, most hearted / liked / disliked. Player: heart, like, dislike,
+Tabs: recently added (with Songs, Artists, Albums and Playlists underneath, newest first), most listened, artists,
+playlists, and the top 50 most hearted, top 20 most liked and top 20 most disliked songs. Playlist covers show a 3x3
+grid of album art (9+ albums) or a 2x2 grid. Player: heart, like, dislike,
 volume, repeat (each song 2x or 3x), shuffle (all songs, same artist, same playlist) and an Up next list.
+
+## Clean database
+
+Admin > **Clean database** deletes every song, playlist, artwork file, play count and reaction. It asks for your
+password and the word `confirm`. Your admin login is kept.
 
 ## Artwork
 
