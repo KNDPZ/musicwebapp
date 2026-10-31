@@ -34,10 +34,25 @@ A song that is already stored (same file contents) is never uploaded twice. In p
 
 ## Listener features
 
-Tabs: recently added (with Songs, Artists, Albums and Playlists underneath, newest first), most listened, artists,
+Layout: a menu on the left; the active tab opens its sub tabs under it. Songs are shown as tiles. Tabs: recently added (with Songs, Artists, Albums and Playlists underneath, newest first), most listened, artists,
 playlists, and the top 50 most hearted, top 20 most liked and top 20 most disliked songs. Playlist covers show a 3x3
 grid of album art (9+ albums) or a 2x2 grid. Player: heart, like, dislike,
 volume, repeat (each song 2x or 3x), shuffle (all songs, same artist, same playlist) and an Up next list.
+
+## Songs with several artists
+
+A song tagged "The Interrupters, Rancid" is listed under both artists, and under its album on each of their pages.
+Artists are split on `;`  `/`  `,`  `feat.`  `ft.`  `featuring`  `vs`. A few names that contain those characters are protected
+(see `KEEP` in `src/index.js`, add your own there); `&` and `and` are never split. To fix one song, use Edit in the admin page:
+separate the artists with `;` (add a `;` at the end to keep a comma inside one name).
+
+Track numbers come from the song's track tag. A song keeps its number (for example 3) even if it is the only song of that album in the library.
+
+## Lyrics
+
+The **Lyrics** button (player bar, before the shuffle buttons) opens a side panel. Lyrics come from LRCLIB (free, no key). When time-synced
+lyrics exist the current line is highlighted as the song plays and clicking a line jumps to it; otherwise plain lyrics are shown.
+Results are cached in R2. Lyrics belong to their owners.
 
 ## Requests
 

@@ -1,5 +1,5 @@
 import { readTags } from "/id3.js";
-import { artistArt, albumArt, albumName } from "/art.js";
+import { artistArt, albumArt, albumName, artistsOf, artistLine } from "/art.js";
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const post = (url, body, method = "POST") =>
@@ -43,7 +43,7 @@ function renderSongs() {
   const from = (page - 1) * PAGE, list = all.slice(from, from + PAGE);
   $("#count").textContent = all.length ? `(${from + 1}–${from + list.length} of ${all.length})` : "(0)";
   $("#rows").innerHTML = list.length ? list.map((t) => `<tr data-id="${t.id}">
-    <td>${esc(t.title)}</td><td>${esc(t.artist)}</td><td>${esc(albumName(t) || "Single")}</td><td>${t.plays}</td>
+    <td>${esc(t.title)}</td><td>${esc(artistLine(t))}</td><td>${esc(albumName(t) || "Single")}</td><td>${t.plays}</td>
     <td style="white-space:nowrap"><button class="btn ghost" data-act="edit" ${small}>Edit</button>
     <button class="btn danger" data-act="del" ${small}>Delete</button></td></tr>`).join("")
     : `<tr><td colspan="5" class="muted">${songQ ? "No songs match your search." : "No songs yet. Drop an mp3 above."}</td></tr>`;
@@ -130,7 +130,7 @@ $("#rows").addEventListener("click", async (e) => {
     if (confirm(`Delete "${t.title}"? This removes the file and takes it out of every playlist.`)) { await fetch("/api/admin/tracks/" + id, { method: "DELETE" }); refresh(); loadPlaylists(); }
   } else {
     const title = prompt("Title", t.title); if (title === null) return;
-    const artist = prompt("Artist", t.artist); if (artist === null) return;
+    const artist = prompt('Artist(s). Separate several artists with ";". Add a ";" at the end to keep a comma inside one name.', artistsOf(t).join("; ")); if (artist === null) return;
     const album = prompt("Album (leave empty for a single)", albumName(t)); if (album === null) return;
     await post("/api/admin/tracks/" + id, { title, artist, album }, "PATCH"); refresh();
   }
@@ -183,7 +183,7 @@ async function handle(fileList) {
         bar.style.width = "100%"; continue;
       }
       if (m === "album") { if (album) tags.album = album; if (artist) tags.artist = artist; if (!tags.track) tags.track = String(n); }
-      status.textContent = `${tags.artist || "Unknown Artist"} · ${tags.album || "Single"}`;
+      status.textContent = `${(tags.artist || "Unknown Artist").replace(/;/g, ", ")} · ${tags.album || "Single"}`;
       const t = await send(file, tags, hash, pid, (p) => (bar.style.width = p * 100 + "%"));
       bar.style.width = "100%";
       if (tags.cover) await fetch(`/api/admin/tracks/${t.id}/cover`, { method: "PUT", headers: { "content-type": tags.cover.type }, body: tags.cover });
@@ -196,7 +196,7 @@ async function handle(fileList) {
 
 async function warm(list, onStep = () => {}) {
   const urls = new Set();
-  list.forEach((t) => { urls.add(artistArt(t.artist)); urls.add(albumArt(t)); });
+  list.forEach((t) => { artistsOf(t).forEach((a) => urls.add(artistArt(a))); urls.add(albumArt(t)); });
   urls.delete("");
   let n = 0;
   for (const u of urls) { await fetch(u).catch(() => {}); onStep(++n, urls.size); await new Promise((r) => setTimeout(r, 200)); }

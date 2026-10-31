@@ -3,7 +3,7 @@ function decode(d) {
   const e = d[0], b = d.subarray(1);
   let label = e === 0 ? "windows-1252" : e === 3 ? "utf-8" : e === 2 ? "utf-16be" : "utf-16le";
   if (e === 1 && b[0] === 0xfe && b[1] === 0xff) label = "utf-16be";
-  return new TextDecoder(label).decode(b).replace(/\0+/g, " ").trim();
+  return new TextDecoder(label).decode(b).replace(/\uFEFF/g, "").replace(/\0+$/, "").replace(/\0+/g, ";").trim();
 }
 const v1 = (a) => new TextDecoder("windows-1252").decode(a).replace(/\0+$/g, "").trim();
 

@@ -16,24 +16,33 @@
   <symbol id="i-vol" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4zM19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></symbol>
   <symbol id="i-mute" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4zM23 9l-6 6M17 9l6 6"/></symbol>
   <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+  <symbol id="i-lyrics" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2zM8 8h8M8 12h5"/></symbol>
   <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
 </svg>
 
-<div class="wrap">
-  <div class="top">
+<div class="app">
+  <aside class="side">
     <div class="brand">Music</div>
-    <label for="q" class="hidden">Search</label>
-    <input id="q" type="search" placeholder="Search songs, artists, albums" style="flex:1;min-width:200px;max-width:420px">
-    <button class="ib ico" id="gear" aria-label="Admin login" title="Admin"><svg><use href="#i-gear"/></svg></button>
+    <nav id="nav" aria-label="Browse"></nav>
+  </aside>
+  <div class="main">
+    <div class="top">
+      <label for="q" class="hidden">Search</label>
+      <input id="q" type="search" placeholder="Search songs, artists, albums" style="flex:1;min-width:180px;max-width:420px">
+      <button class="ib ico" id="gear" aria-label="Admin login" title="Admin" style="margin-left:auto"><svg><use href="#i-gear"/></svg></button>
+    </div>
+    <main id="list"></main>
   </div>
-  <nav class="tabs" id="tabs" aria-label="Sort music"></nav>
-  <nav class="tabs sub hidden" id="subtabs" aria-label="Recently added"></nav>
-  <main id="list"></main>
 </div>
 
 <aside id="upnext" class="upnext hidden" aria-label="Up next">
   <div class="uph"><b>Up next</b><span class="muted" id="uql"></span></div>
   <div id="uplist"></div>
+</aside>
+
+<aside id="lyrics" class="upnext hidden" aria-label="Lyrics">
+  <div class="uph"><b>Lyrics</b><span class="muted" id="lyt"></span></div>
+  <div id="lybody" class="lybody"></div>
 </aside>
 
 <div class="player" id="player">
@@ -50,6 +59,7 @@
     <div class="seek"><span class="muted" id="cur">0:00</span><input id="seek" type="range" min="0" max="100" value="0" step="0.1" aria-label="Seek"><span class="muted" id="dur">0:00</span></div>
   </div>
   <div class="right">
+    <button class="pill" id="lybtn" aria-expanded="false" aria-controls="lyrics" title="Show lyrics that follow the song"><svg><use href="#i-lyrics"/></svg>Lyrics</button>
     <div class="shuf" role="group" aria-label="Shuffle">
       <button class="pill" id="sAll" title="Play a random song from the whole library"><svg><use href="#i-shuffle"/></svg>All</button>
       <button class="pill" id="sArtist" title="Random song from this artist"><svg><use href="#i-shuffle"/></svg>Artist</button>

@@ -53,6 +53,7 @@ function init(env) {
       q("INSERT OR IGNORE INTO admin (id, salt, hash) VALUES ('admin', ?, ?)").bind(DEFAULT_SALT, DEFAULT_HASH),
     ]);
     try { await q("ALTER TABLE tracks ADD COLUMN hash TEXT").run(); } catch {} // upgrade from an older version
+    try { await q("ALTER TABLE tracks ADD COLUMN artists TEXT").run(); } catch {} // JSON list: one entry per artist on the song
     try { await q("ALTER TABLE playlists ADD COLUMN cover_v INTEGER NOT NULL DEFAULT 0").run(); } catch {} // custom playlist image version
     await q("CREATE UNIQUE INDEX IF NOT EXISTS idx_tracks_hash ON tracks(hash)").run();
     await q("CREATE INDEX IF NOT EXISTS idx_reactions_track ON reactions(track_id)").run();
@@ -96,6 +97,42 @@ async function serveAudio(req, env, id) {
   return new Response(req.method === "HEAD" ? null : obj.body, { status, headers: h });
 }
 
+// ---------- artists ----------
+// A song can have several artists ("The Interrupters, Rancid"). They are split on ; / , feat. ft. featuring vs,
+// except for the names below, which really contain those characters. Add your own to KEEP if a name gets split wrongly
+// (or fix a single song with Edit in the admin page). "&" and "and" are never split because they are usually part of a band name.
+const KEEP = ["AC/DC", "Tyler, The Creator", "Earth, Wind & Fire", "Emerson, Lake & Palmer", "Peter, Paul and Mary",
+  "Blood, Sweat & Tears", "Crosby, Stills, Nash & Young", "Crosby, Stills & Nash"];
+const uniq = (list) => { const out = []; for (const p of list) if (p && !out.some((o) => o.toLowerCase() === p.toLowerCase())) out.push(p); return out; };
+function splitArtists(raw) {
+  let s = String(raw ?? "").replace(/\0/g, ";");
+  const hold = [];
+  for (const k of KEEP) {
+    s = s.replace(new RegExp(k.replace(/[.*+?^${}()|[\]\\\/]/g, "\\$&"), "gi"), (m) => { hold.push(m); return `\u0001${hold.length - 1}\u0001`; });
+  }
+  s = s.replace(/\(\s*(?:feat\.?|ft\.?|featuring)\s+([^)]*)\)/gi, ";$1");
+  const parts = s.split(/\s*(?:[;\/,]|\s+feat\.?\s+|\s+ft\.?\s+|\s+featuring\s+|\s+vs\.?\s+)\s*/i)
+    .map((p) => p.replace(/\u0001(\d+)\u0001/g, (_, i) => hold[+i]).trim().slice(0, 200));
+  const out = uniq(parts).slice(0, 8);
+  return out.length ? out : [clean(raw) || "Unknown Artist"];
+}
+// typed by the admin: a ";" means "exactly these artists"
+function artistsFromInput(str) {
+  str = clean(str);
+  if (str.includes(";")) { const a = uniq(str.split(";").map((x) => x.trim().slice(0, 200))).slice(0, 8); if (a.length) return a; }
+  return splitArtists(str);
+}
+function artistsOfRow(r) {
+  if (r.artists) { try { const a = JSON.parse(r.artists); if (Array.isArray(a) && a.length) return a; } catch {} }
+  return splitArtists(r.artist);
+}
+async function libraryHasArtist(DB, name, album = null) {
+  const sql = `SELECT artist, artists FROM tracks WHERE (instr(artist, ?1) > 0 OR instr(COALESCE(artists, ''), ?1) > 0)${album === null ? "" : " AND album = ?2"} LIMIT 200`;
+  const st = DB.prepare(sql);
+  const rows = (await (album === null ? st.bind(name) : st.bind(name, album)).all()).results;
+  return rows.some((r) => artistsOfRow(r).includes(name));
+}
+
 // ---------- artwork ----------
 // Embedded covers (uploaded by the admin page) win. Otherwise Deezer's public search API (no key) is used
 // and the image is cached in R2. Albums use the album cover, artists the artist photo, singles the track's cover.
@@ -109,7 +146,7 @@ async function deezerImage(kind, artist, album, title) {
   const bare = (s) => s.replace(/"/g, "");
   const q = kind === "album" ? `artist:"${bare(artist)}" album:"${bare(album)}"`
     : kind === "track" ? `artist:"${bare(artist)}" track:"${bare(title)}"` : artist;
-  const res = await fetch(`https://api.deezer.com/search/${kind}?limit=10&q=${encodeURIComponent(q)}`, {
+  const res = await fetch(`${DZ}/search/${kind}?limit=10&q=${encodeURIComponent(q)}`, {
     headers: { "user-agent": "music-app" },
   });
   const data = await res.json();
@@ -137,17 +174,15 @@ async function serveArt(env, url) {
   let artist, album = "", title = "", key;
   if (kind === "track") {
     const id = clean(p.get("id"), 64);
-    const t = /^[\w-]+$/.test(id) && await env.DB.prepare("SELECT artist, title FROM tracks WHERE id = ?").bind(id).first();
+    const t = /^[\w-]+$/.test(id) && await env.DB.prepare("SELECT artist, artists, title FROM tracks WHERE id = ?").bind(id).first();
     if (!t) return noArt("public, max-age=300");
-    ({ artist, title } = t); key = `art/track/${id}`;
+    artist = artistsOfRow(t)[0]; title = t.title; key = `art/track/${id}`;
   } else {
     artist = clean(p.get(kind === "artist" ? "name" : "artist"));
     album = kind === "album" ? clean(p.get("album")) : "";
     if (!artist || /^unknown/i.test(artist) || (kind === "album" && (!album || /^unknown/i.test(album)))) return noArt("public, max-age=300");
     // Only look up things that exist in the library, so strangers can't trigger arbitrary lookups.
-    const found = kind === "artist"
-      ? await env.DB.prepare("SELECT 1 FROM tracks WHERE artist = ? LIMIT 1").bind(artist).first()
-      : await env.DB.prepare("SELECT 1 FROM tracks WHERE artist = ? AND album = ? LIMIT 1").bind(artist, album).first();
+    const found = kind === "artist" ? await libraryHasArtist(env.DB, artist) : await libraryHasArtist(env.DB, artist, album);
     if (!found) return noArt("public, max-age=300");
     key = await artKey(kind, artist, album);
   }
@@ -228,15 +263,17 @@ async function spotifyPlaylist(raw) {
 }
 async function inLibrary(DB, it) {
   if (it.kind === "playlist") return (await DB.prepare("SELECT name FROM playlists").all()).results.some((p) => norm(p.name) === norm(it.title));
-  const lib = (await DB.prepare("SELECT artist, title, album FROM tracks").all()).results;
-  return lib.some((t) => it.kind === "song" ? same(t.title, it.title) && sameName(t.artist, it.artist)
-    : it.kind === "album" ? t.album && same(t.album, it.title) && sameName(t.artist, it.artist) : sameName(t.artist, it.title));
+  const lib = (await DB.prepare("SELECT artist, artists, title, album FROM tracks").all()).results;
+  const by = (t, name) => artistsOfRow(t).some((a) => sameName(a, name));
+  return lib.some((t) => it.kind === "song" ? same(t.title, it.title) && by(t, it.artist)
+    : it.kind === "album" ? t.album && same(t.album, it.title) && by(t, it.artist) : by(t, it.title));
 }
 // A newly added song takes any matching requests (song, its album, its artist) out of the queue.
 async function fulfil(env, t) {
   const { results } = await env.DB.prepare("SELECT id, kind, title, artist FROM requests WHERE kind != 'playlist'").all();
-  const done = results.filter((r) => r.kind === "song" ? same(r.title, t.title) && sameName(r.artist, t.artist)
-    : r.kind === "album" ? t.album && same(r.title, t.album) && sameName(r.artist, t.artist) : sameName(r.title, t.artist));
+  const by = (name) => t.artists.some((a) => sameName(a, name));
+  const done = results.filter((r) => r.kind === "song" ? same(r.title, t.title) && by(r.artist)
+    : r.kind === "album" ? t.album && same(r.title, t.album) && by(r.artist) : by(r.title));
   if (done.length) await env.DB.batch(done.map((r) => env.DB.prepare("DELETE FROM requests WHERE id = ?").bind(r.id)));
 }
 
@@ -264,7 +301,7 @@ async function wikipediaBio(name) {
 }
 async function serveBio(env, url) {
   const name = clean(url.searchParams.get("name"));
-  if (!name || /^unknown/i.test(name) || !(await env.DB.prepare("SELECT 1 FROM tracks WHERE artist = ? LIMIT 1").bind(name).first()))
+  if (!name || /^unknown/i.test(name) || !(await libraryHasArtist(env.DB, name)))
     return json({ error: "none" }, 404, { "cache-control": "public, max-age=300" });
   const key = `bio/${(await sha256(norm(name))).slice(0, 24)}`;
   let rec = null;
@@ -281,7 +318,56 @@ async function serveBio(env, url) {
     : json({ text: rec.text, url: rec.url, source: "Wikipedia" }, 200, { "cache-control": "public, max-age=3600" });
 }
 
-const TRACK_COLS = `t.id, t.title, t.artist, t.album, t.track_no, t.duration, t.plays, t.created_at,
+// ---------- lyrics ----------
+let LRC = "https://lrclib.net";
+function parseLrc(text) {
+  const out = [];
+  for (const line of String(text || "").split(/\r?\n/)) {
+    const stamps = [...line.matchAll(/\[(\d+):(\d+(?:\.\d+)?)\]/g)];
+    if (!stamps.length) continue;
+    const txt = line.replace(/\[[^\]]*\]/g, "").trim();
+    for (const s of stamps) out.push([Math.round((+s[1] * 60 + +s[2]) * 100) / 100, txt]);
+  }
+  return out.sort((a, b) => a[0] - b[0]);
+}
+const lyricsUsable = (d) => d && (d.instrumental || d.syncedLyrics || d.plainLyrics);
+async function lrclibLookup(t) {
+  const exact = new URLSearchParams({ track_name: t.title, artist_name: t.artist });
+  if (t.album) exact.set("album_name", t.album);
+  if (t.duration) exact.set("duration", String(Math.round(t.duration)));
+  let r = await fetch(`${LRC}/api/get?${exact}`, { headers: UA });
+  if (r.ok) { const d = await r.json(); if (lyricsUsable(d)) return d; }
+  else if (r.status !== 404) throw new Error("lrclib unavailable");
+  r = await fetch(`${LRC}/api/search?${new URLSearchParams({ track_name: t.title, artist_name: t.artist })}`, { headers: UA });
+  if (!r.ok) throw new Error("lrclib unavailable");
+  const list = ((await r.json()) || []).filter(lyricsUsable);
+  if (!list.length) return null;
+  const gap = (d) => (t.duration && d.duration ? Math.abs(d.duration - t.duration) : 0);
+  list.sort((a, b) => gap(a) - gap(b));
+  return !t.duration || gap(list[0]) <= 5 ? list[0] : null; // a very different length is probably another version
+}
+async function serveLyrics(env, url) {
+  const id = clean(url.searchParams.get("id"), 64);
+  const t = /^[\w-]+$/.test(id) && await env.DB.prepare("SELECT title, artist, artists, album, duration FROM tracks WHERE id = ?").bind(id).first();
+  if (!t) return json({ error: "none" }, 404);
+  const key = `lyrics/${id}`;
+  let rec = null;
+  const obj = await env.MUSIC.get(key);
+  if (obj) { try { rec = await obj.json(); } catch {} }
+  if (rec?.none && Date.now() - rec.at > RETRY_MS) rec = null;
+  if (!rec) {
+    let d;
+    try { d = await lrclibLookup({ title: t.title, artist: artistsOfRow(t)[0], album: t.album, duration: t.duration }); }
+    catch { return json({ error: "unavailable" }, 502); }
+    rec = d ? { synced: d.syncedLyrics ? parseLrc(d.syncedLyrics) : null, plain: d.plainLyrics || null, instrumental: !!d.instrumental, at: Date.now() } : { none: true, at: Date.now() };
+    if (rec.synced && !rec.synced.length) rec.synced = null;
+    await env.MUSIC.put(key, JSON.stringify(rec), { httpMetadata: { contentType: "application/json" } });
+  }
+  if (rec.none) return json({ error: "none" }, 404, { "cache-control": "public, max-age=300" });
+  return json({ synced: rec.synced, plain: rec.plain, instrumental: rec.instrumental }, 200, { "cache-control": "public, max-age=3600" });
+}
+
+const TRACK_COLS = `t.id, t.title, t.artist, t.artists, t.album, t.track_no, t.duration, t.plays, t.created_at,
   COALESCE(SUM(r.kind = 'heart'), 0) AS hearts, COALESCE(SUM(r.kind = 'like'), 0) AS likes, COALESCE(SUM(r.kind = 'dislike'), 0) AS dislikes`;
 
 async function api(req, env, url) {
@@ -294,7 +380,7 @@ async function api(req, env, url) {
   if (path === "/api/tracks" && m === "GET") {
     const { results } = await DB.prepare(
       `SELECT ${TRACK_COLS} FROM tracks t LEFT JOIN reactions r ON r.track_id = t.id GROUP BY t.id ORDER BY t.created_at DESC`).all();
-    return json(results);
+    return json(results.map((t) => ({ ...t, artists: artistsOfRow(t) })));
   }
   if (path === "/api/playlists" && m === "GET") {
     const pls = (await DB.prepare("SELECT id, name, created_at, cover_v FROM playlists ORDER BY created_at DESC").all()).results;
@@ -308,6 +394,7 @@ async function api(req, env, url) {
   }
   if (path === "/api/suggest" && m === "GET") return suggest(url);
   if (path === "/api/bio" && m === "GET") return serveBio(env, url);
+  if (path === "/api/lyrics" && m === "GET") return serveLyrics(env, url);
   if (path === "/api/requests" && m === "GET") {
     const { results } = await DB.prepare("SELECT id, kind, title, artist, album, image, url, created_at FROM requests ORDER BY created_at, rowid").all();
     return json(results);
@@ -441,10 +528,11 @@ async function api(req, env, url) {
       track_no: parseInt(meta.track, 10) || 0,
       duration: Number(meta.duration) || 0,
     };
+    t.artists = splitArtists(t.artist);
     const now = Date.now();
     const stmts = [DB.prepare(
-      "INSERT INTO tracks (id, title, artist, album, track_no, duration, size, created_at, hash) VALUES (?,?,?,?,?,?,?,?,?)")
-      .bind(t.id, t.title, t.artist, t.album, t.track_no, t.duration, size, now, hash)];
+      "INSERT INTO tracks (id, title, artist, album, track_no, duration, size, created_at, hash, artists) VALUES (?,?,?,?,?,?,?,?,?,?)")
+      .bind(t.id, t.title, t.artist, t.album, t.track_no, t.duration, size, now, hash, JSON.stringify(t.artists))];
     if (pid) stmts.push(DB.prepare("INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, added_at) VALUES (?,?,?)").bind(pid, id, now));
     await DB.batch(stmts);
     await fulfil(env, t).catch(() => {}); // takes matching requests out of the queue
@@ -479,11 +567,11 @@ async function api(req, env, url) {
     return json({ ok: true });
   }
   if ((x = path.match(/^\/api\/admin\/tracks\/([\w-]+)\/cover$/)) && m === "PUT") {
-    const t = await DB.prepare("SELECT artist, album FROM tracks WHERE id = ?").bind(x[1]).first();
+    const t = await DB.prepare("SELECT artist, artists, album FROM tracks WHERE id = ?").bind(x[1]).first();
     const type = req.headers.get("content-type") || "";
     const size = Number(req.headers.get("content-length") || 0);
     if (!t || !/^image\/(jpeg|png|webp)$/.test(type) || !size || size > 5 * 1024 * 1024) return json({ error: "Bad cover image." }, 400);
-    const key = t.album ? await artKey("album", t.artist, t.album) : `art/track/${x[1]}`;
+    const key = t.album ? await artKey("album", artistsOfRow(t)[0], t.album) : `art/track/${x[1]}`;
     await env.MUSIC.put(key, req.body, { httpMetadata: { contentType: type }, customMetadata: { source: "embedded", at: String(Date.now()) } });
     return json({ ok: true });
   }
@@ -500,7 +588,7 @@ async function api(req, env, url) {
   }
   if ((x = path.match(/^\/api\/admin\/tracks\/([\w-]+)$/))) {
     if (m === "DELETE") {
-      await env.MUSIC.delete([x[1], `art/track/${x[1]}`]);
+      await env.MUSIC.delete([x[1], `art/track/${x[1]}`, `lyrics/${x[1]}`]);
       await DB.batch([
         DB.prepare("DELETE FROM tracks WHERE id = ?").bind(x[1]),
         DB.prepare("DELETE FROM playlist_tracks WHERE track_id = ?").bind(x[1]),
@@ -510,9 +598,11 @@ async function api(req, env, url) {
     }
     if (m === "PATCH") {
       const b = await req.json().catch(() => ({}));
-      await DB.prepare("UPDATE tracks SET title = ?, artist = ?, album = ? WHERE id = ?")
-        .bind(clean(b.title) || "Untitled", clean(b.artist) || "Unknown Artist", clean(b.album), x[1]).run();
-      await fulfil(env, { title: clean(b.title), artist: clean(b.artist), album: clean(b.album) }).catch(() => {});
+      const artists = artistsFromInput(b.artist);
+      await DB.prepare("UPDATE tracks SET title = ?, artist = ?, artists = ?, album = ? WHERE id = ?")
+        .bind(clean(b.title) || "Untitled", artists.join(", "), JSON.stringify(artists), clean(b.album), x[1]).run();
+      await env.MUSIC.delete(`lyrics/${x[1]}`);
+      await fulfil(env, { title: clean(b.title), artists, album: clean(b.album) }).catch(() => {});
       return json({ ok: true });
     }
   }
@@ -566,6 +656,7 @@ export default {
     const url = new URL(req.url);
     if (env.DEEZER_API) DZ = env.DEEZER_API;
     if (env.WIKI_API) WIKI = env.WIKI_API;
+    if (env.LRCLIB_API) LRC = env.LRCLIB_API;
     try {
       await init(env);
       if (url.pathname.startsWith("/audio/")) return await serveAudio(req, env, url.pathname.slice(7));

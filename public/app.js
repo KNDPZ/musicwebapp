@@ -1,4 +1,4 @@
-import { artistArt, albumArt, albumName } from "/art.js";
+import { artistArt, albumArt, albumName, artistsOf, artistLine, primaryArtist } from "/art.js";
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const fmt = (s) => { s = Math.floor(s || 0); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); };
@@ -34,37 +34,42 @@ async function load() {
 
 // ---------- routing ----------
 const SUBS = { songs: "Songs", artists: "Artists", albums: "Albums", playlists: "Playlists" };
-const LIMIT = { top: 100, hearts: 50, likes: 20, dislikes: 20 };
-const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
-const dec = (s) => { try { return decodeURIComponent(s); } catch { return s; } };
-const enc = encodeURIComponent;
-function parse() {
-  const raw = location.hash.slice(1) || "recent", i = raw.indexOf("/");
-  return { a: i < 0 ? raw : raw.slice(0, i), arg: i < 0 ? "" : raw.slice(i + 1) };
-}
-function renderTabs(active) {
-  $("#tabs").innerHTML = Object.entries(TABS).map(([k, v]) =>
-    `<a class="tab" href="#${k}"${k === active ? ' aria-current="page"' : ""}>${v}</a>`).join("");
-}
 const SUBMAPS = {
   recent: { items: SUBS, def: "songs" },
   request: { items: { queue: "Queue", new: "Make a request" }, def: "queue" },
 };
-function renderSub(tab, sub) {
-  const el = $("#subtabs"), sm = SUBMAPS[tab];
-  el.classList.toggle("hidden", !sm);
-  el.setAttribute("aria-label", TABS[tab] || "");
-  el.innerHTML = sm ? Object.entries(sm.items).map(([k, v]) =>
-    `<a class="tab" href="#${tab}${k === sm.def ? "" : "/" + k}"${k === sub ? ' aria-current="page"' : ""}>${v}</a>`).join("") : "";
+const LIMIT = { top: 100, hearts: 50, likes: 20, dislikes: 20 };
+const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+const dec = (s) => { try { return decodeURIComponent(s); } catch { return s; } };
+const enc = encodeURIComponent;
+const dict = () => Object.create(null);
+function parse() {
+  const raw = location.hash.slice(1) || "recent", i = raw.indexOf("/");
+  return { a: i < 0 ? raw : raw.slice(0, i), arg: i < 0 ? "" : raw.slice(i + 1) };
 }
-const match = (t) => !query || `${t.title} ${t.artist} ${albumName(t)}`.toLowerCase().includes(query);
+// Left menu: a main tab opens its sub tabs underneath it when it is the active one.
+function renderNav(tab, sub) {
+  $("#nav").innerHTML = Object.entries(TABS).map(([k, v]) => {
+    const on = k === tab, sm = SUBMAPS[k];
+    let h = `<a class="nav-item" href="#${k}"${on ? (sm ? ' aria-current="true"' : ' aria-current="page"') : ""}>${v}</a>`;
+    if (on && sm) h += `<div class="subnav">${Object.entries(sm.items).map(([s, sv]) =>
+      `<a class="nav-sub" href="#${k}${s === sm.def ? "" : "/" + s}"${s === sub ? ' aria-current="page"' : ""}>${sv}</a>`).join("")}</div>`;
+    return h;
+  }).join("");
+}
+const match = (t) => !query || `${t.title} ${artistLine(t)} ${albumName(t)}`.toLowerCase().includes(query);
 const latest = (l) => Math.max(0, ...l.map((t) => t.created_at));
+// The number from the song's own track tag, even when only one song of the album is here. Without any tags, the position.
+const numLabel = (t, i, l) => t.track_no || (l.some((x) => x.track_no) ? "–" : i + 1);
+const byTrack = (x, y) => (x.track_no || 999) - (y.track_no || 999) || x.title.localeCompare(y.title);
 
-function row(t, i, extra = "", cover = false) {
-  return `<button class="row" data-id="${t.id}"><span class="n">${cover ? art(albumArt(t), albumName(t) || t.title) : i}</span>
-    <span class="t">${esc(t.title)}<small>${esc(t.artist)}</small></span>
+function row(t, num, extra = "", cover = false) {
+  return `<button class="row" data-id="${t.id}"><span class="n">${cover ? art(albumArt(t), albumName(t) || t.title) : num}</span>
+    <span class="t">${esc(t.title)}<small>${esc(artistLine(t))}</small></span>
     <span class="al muted">${esc(extra || albumName(t) || "Single")}</span><span class="muted">${fmt(t.duration)}</span></button>`;
 }
+const songTiles = (l, extra) => `<div class="grid s">${l.map((t) =>
+  `<button class="tile sq song" data-id="${t.id}">${art(albumArt(t), albumName(t) || t.title)}<b>${esc(t.title)}</b><span class="muted">${esc(artistLine(t))}</span>${extra ? `<span class="muted">${esc(extra(t))}</span>` : ""}</button>`).join("")}</div>`;
 const empty = (msg) => `<div class="empty">${msg}</div>`;
 const actions = () => `<div class="form" style="margin:12px 0"><button class="btn" data-act="play">Play</button><button class="btn ghost" data-act="shuf">Shuffle</button></div>`;
 const noView = () => { view = { ids: [], label: "", pl: null }; };
@@ -74,7 +79,7 @@ function render() {
   const tab = a === "artist" ? "artists" : a === "playlist" ? "playlists" : a === "album" ? "recent" : has(TABS, a) ? a : "recent";
   const sm = SUBMAPS[tab];
   const sub = !sm ? null : a === "album" ? "albums" : has(sm.items, arg) ? arg : sm.def;
-  renderTabs(tab); renderSub(tab, sub);
+  renderNav(tab, sub);
   const el = $("#list");
   if (tab === "request") { if (sub === "new") requestForm(el); else requestQueue(el); return; }
   if (!tracks.length) { el.innerHTML = empty("No music yet. Check back soon."); noView(); return; }
@@ -93,11 +98,11 @@ function render() {
   markRows();
 }
 
-// Recently added > Songs: every song, newest first
+// Recently added > Songs: every song as a tile, newest first
 function songList(el) {
   const l = tracks.filter(match).sort((x, y) => y.created_at - x.created_at);
   view = { ids: l.map((t) => t.id), label: "Recently added", pl: null };
-  el.innerHTML = l.length ? l.map((t, i) => row(t, i + 1, "", true)).join("") : empty("Nothing matches your search.");
+  el.innerHTML = l.length ? songTiles(l) : empty("Nothing matches your search.");
 }
 
 // Most listened / hearted / liked / disliked
@@ -110,14 +115,15 @@ function listView(el, tab) {
   }
   l = l.slice(0, LIMIT[tab]);
   view = { ids: l.map((t) => t.id), label: TABS[tab], pl: null };
-  const head = tab === "top" ? "" : `<p class="muted" style="margin:0 0 8px">Top ${LIMIT[tab]} ${TABS[tab].toLowerCase()}</p>`;
-  el.innerHTML = l.length ? head + l.map((t, i) => row(t, i + 1, extra(t), true)).join("")
+  const head = tab === "top" ? "" : `<p class="muted" style="margin:0 0 12px">Top ${LIMIT[tab]} ${TABS[tab].toLowerCase()}</p>`;
+  el.innerHTML = l.length ? head + songTiles(l, extra)
     : empty(tab === "top" ? "Nothing matches your search." : "Nothing here yet. Songs show up once someone reacts to them.");
 }
 
+// A song with several artists is listed under each of them.
 function artistGrid(el, recent) {
-  const by = {};
-  tracks.filter(match).forEach((t) => (by[t.artist] ??= []).push(t));
+  const by = dict();
+  tracks.filter(match).forEach((t) => artistsOf(t).forEach((n) => (by[n] ??= []).push(t)));
   const names = Object.keys(by).sort(recent ? (x, y) => latest(by[y]) - latest(by[x]) || x.localeCompare(y) : (x, y) => x.localeCompare(y));
   noView();
   el.innerHTML = names.length ? `<div class="grid">${names.map((n) =>
@@ -125,38 +131,56 @@ function artistGrid(el, recent) {
     : empty("Nothing matches your search.");
 }
 
+// Songs with the same album name that share an artist form one album.
+function buildAlbums(ts) {
+  const byName = dict();
+  ts.forEach((t) => { const al = albumName(t); if (al) (byName[al.toLowerCase()] ??= []).push(t); });
+  const out = [];
+  for (const group of Object.values(byName)) {
+    const parent = group.map((_, i) => i);
+    const find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+    const owner = dict();
+    group.forEach((t, i) => artistsOf(t).forEach((a) => { const k = a.toLowerCase(); if (k in owner) parent[find(i)] = find(owner[k]); else owner[k] = i; }));
+    const clusters = dict();
+    group.forEach((t, i) => (clusters[find(i)] ??= []).push(t));
+    for (const tr of Object.values(clusters)) {
+      const count = dict();
+      tr.forEach((t) => (count[primaryArtist(t)] = (count[primaryArtist(t)] || 0) + 1));
+      const artist = Object.keys(count).sort((x, y) => count[y] - count[x])[0];
+      out.push({ name: albumName(tr[0]), artist, tracks: tr });
+    }
+  }
+  return out;
+}
+
 function albumGrid(el) {
-  const by = {};
-  tracks.filter(match).forEach((t) => { if (albumName(t)) (by[t.artist + "\u0000" + albumName(t)] ??= []).push(t); });
-  const keys = Object.keys(by).sort((x, y) => latest(by[y]) - latest(by[x]) || x.localeCompare(y));
+  const l = buildAlbums(tracks.filter(match)).sort((x, y) => latest(y.tracks) - latest(x.tracks) || x.name.localeCompare(y.name));
   noView();
-  el.innerHTML = keys.length ? `<div class="grid">${keys.map((k) => {
-    const f = by[k][0], al = albumName(f);
-    return `<a class="tile sq" href="#album/${enc(f.artist)}/${enc(al)}">${art(albumArt(f), al)}<b>${esc(al)}</b><span class="muted">${esc(f.artist)}</span></a>`;
-  }).join("")}</div>` : empty("No albums yet. Albums appear when songs have an album tag.");
+  el.innerHTML = l.length ? `<div class="grid s">${l.map((al) =>
+    `<a class="tile sq" href="#album/${enc(al.artist)}/${enc(al.name)}">${art(albumArt(al.tracks[0]), al.name)}<b>${esc(al.name)}</b><span class="muted">${esc(al.artist)}</span></a>`).join("")}</div>`
+    : empty("No albums yet. Albums appear when songs have an album tag.");
 }
 
 function albumPage(el, artist, album) {
-  const l = tracks.filter((t) => t.artist === artist && albumName(t) === album)
-    .sort((x, y) => (x.track_no || 999) - (y.track_no || 999) || x.title.localeCompare(y.title));
+  const l = tracks.filter((t) => albumName(t) === album && artistsOf(t).includes(artist)).sort(byTrack);
   if (!l.length) { el.innerHTML = `<a class="back" href="#recent/albums">← Albums</a>` + empty("Album not found."); noView(); return; }
   view = { ids: l.map((t) => t.id), label: album, pl: null };
   el.innerHTML = `<a class="back" href="#recent/albums">← Albums</a>
     <div class="hero">${art(albumArt(l[0]), album)}<div><h1>${esc(album)}</h1><span class="muted"><a href="#artist/${enc(artist)}">${esc(artist)}</a> · ${plural(l.length, "song")}</span>${actions()}</div></div>
-    ${l.map((t, i) => row(t, t.track_no || i + 1)).join("")}`;
+    ${l.map((t, i) => row(t, numLabel(t, i, l))).join("")}`;
 }
 
 function artistPage(el, name) {
-  const ts = tracks.filter((t) => t.artist === name);
+  const ts = tracks.filter((t) => artistsOf(t).includes(name));
   if (!ts.length) { el.innerHTML = `<a class="back" href="#artists">← All artists</a>` + empty("Artist not found."); noView(); return; }
-  const groups = {};
+  const groups = dict();
   ts.forEach((t) => (groups[albumName(t)] ??= []).push(t));
   const names = Object.keys(groups).sort((a, b) => (a === "" ? 1 : b === "" ? -1 : a.localeCompare(b)));
   const ids = [];
   const body = names.map((g) => {
-    const l = groups[g].sort((x, y) => (x.track_no || 999) - (y.track_no || 999) || x.title.localeCompare(y.title));
+    const l = groups[g].sort(byTrack);
     l.forEach((t) => ids.push(t.id));
-    return `<section><h2 class="sec">${art(albumArt(l[0]), g || "S")}${esc(g || "Singles")} <span class="muted" style="font-size:14px;font-weight:400">${plural(l.length, "song")}</span></h2>${l.map((t, i) => row(t, t.track_no || i + 1)).join("")}</section>`;
+    return `<section><h2 class="sec">${art(albumArt(l[0]), g || "S")}${esc(g || "Singles")} <span class="muted" style="font-size:14px;font-weight:400">${plural(l.length, "song")}</span></h2>${l.map((t, i) => row(t, g ? numLabel(t, i, l) : i + 1)).join("")}</section>`;
   }).join("");
   view = { ids, label: name, pl: null };
   const albums = names.filter((g) => g).length;
@@ -174,13 +198,13 @@ async function loadBio(name) {
   } catch {}
 }
 
-// Playlist cover: 9 different album covers when the playlist has 9+ albums, otherwise a 4-cover grid.
+// Playlist cover: your own image, else 9 different album covers (9+ albums) or a 4-cover grid.
 function mosaic(p) {
   if (p.cover_v) return art(`/art/playlist?id=${enc(p.id)}&v=${p.cover_v}`, p.name);
   const seen = new Set(), urls = [];
   for (const id of p.tracks) {
     const t = byId[id]; if (!t) continue;
-    const k = albumName(t) && !/^unknown/i.test(t.artist) ? `a|${t.artist}|${albumName(t)}` : `t|${t.id}`;
+    const k = albumName(t) && !/^unknown/i.test(primaryArtist(t)) ? `a|${primaryArtist(t)}|${albumName(t)}` : `t|${t.id}`;
     if (!seen.has(k)) { seen.add(k); urls.push(albumArt(t)); }
   }
   if (urls.length < 2) return art(urls[0] || "", p.name);
@@ -192,7 +216,7 @@ function playlistGrid(el, recent) {
   let l = playlists.filter((p) => !query || p.name.toLowerCase().includes(query));
   if (recent) l = [...l].sort((x, y) => (y.updated_at || y.created_at) - (x.updated_at || x.created_at));
   noView();
-  el.innerHTML = l.length ? `<div class="grid">${l.map((p) =>
+  el.innerHTML = l.length ? `<div class="grid s">${l.map((p) =>
     `<a class="tile sq" href="#playlist/${enc(p.id)}">${mosaic(p)}<b>${esc(p.name)}</b><span class="muted">${plural(p.tracks.filter((i) => byId[i]).length, "song")}</span></a>`).join("")}</div>`
     : empty("No playlists yet.");
 }
@@ -326,9 +350,10 @@ function play(id) {
   audio.src = "/audio/" + id;
   audio.play().catch(() => {});
   $("#pc").innerHTML = art(albumArt(t), albumName(t) || t.title, "lg");
-  $("#pt").textContent = t.title; $("#pa").textContent = t.artist + (albumName(t) ? " · " + albumName(t) : "");
-  if ("mediaSession" in navigator) navigator.mediaSession.metadata = new MediaMetadata({ title: t.title, artist: t.artist, album: albumName(t), artwork: [{ src: new URL(albumArt(t), location.href).href }] });
+  $("#pt").textContent = t.title; $("#pa").textContent = artistLine(t) + (albumName(t) ? " · " + albumName(t) : "");
+  if ("mediaSession" in navigator) navigator.mediaSession.metadata = new MediaMetadata({ title: t.title, artist: artistLine(t), album: albumName(t), artwork: [{ src: new URL(albumArt(t), location.href).href }] });
   paintReact(); paintShuffle(); markRows(); renderQueue();
+  if (!$("#lyrics").classList.contains("hidden")) loadLyrics();
 }
 const step = (d) => { if (queue.length) play(queue[(Math.max(qi, 0) + d + queue.length) % queue.length]); };
 
@@ -336,7 +361,7 @@ function shuffleIn(kind) {
   const t = cur();
   let ids, label;
   if (kind === "all") { ids = tracks.map((x) => x.id); label = "Shuffling all songs"; }
-  else if (kind === "artist") { if (!t) return; ids = tracks.filter((x) => x.artist === t.artist).map((x) => x.id); label = `Shuffling ${t.artist}`; }
+  else if (kind === "artist") { if (!t) return; const mine = artistsOf(t); ids = tracks.filter((x) => artistsOf(x).some((a) => mine.includes(a))).map((x) => x.id); label = `Shuffling ${mine.join(", ")}`; }
   else { const p = playlists.find((x) => x.id === ctxPl); if (!p) return; ids = p.tracks.filter((i) => byId[i]); label = `Shuffling “${p.name}”`; }
   if (!ids.length) return;
   queue = shuffled(ids); qLabel = label;
@@ -356,7 +381,7 @@ function renderQueue() {
   for (let k = 1; k < queue.length && up.length < 50; k++) up.push(byId[queue[(qi + k) % queue.length]]);
   $("#uql").textContent = qLabel;
   $("#uplist").innerHTML = up.length ? up.filter(Boolean).map((t) =>
-    `<button class="qrow" data-id="${t.id}">${art(albumArt(t), albumName(t) || t.title)}<span class="t">${esc(t.title)}<small>${esc(t.artist)}</small></span></button>`).join("")
+    `<button class="qrow" data-id="${t.id}">${art(albumArt(t), albumName(t) || t.title)}<span class="t">${esc(t.title)}<small>${esc(artistLine(t))}</small></span></button>`).join("")
     : empty(queue.length ? "That's the last song." : "Play a song to see what's next.");
 }
 
@@ -398,11 +423,10 @@ $("#list").addEventListener("click", (e) => {
     else { const q = shuffled(view.ids); startQueue(q, q[0], `Shuffling ${view.label}`, view.pl); }
     return;
   }
-  const r = e.target.closest(".row");
+  const r = e.target.closest(".row, .tile[data-id]");
   if (r) startQueue(view.ids, r.dataset.id, view.label, view.pl);
 });
 $("#uplist").addEventListener("click", (e) => { const r = e.target.closest(".qrow"); if (r) play(r.dataset.id); });
-$("#tabs").addEventListener("click", () => window.scrollTo(0, 0));
 window.addEventListener("hashchange", () => { render(); window.scrollTo(0, 0); });
 $("#q").addEventListener("input", (e) => { query = e.target.value.trim().toLowerCase(); if (parse().a !== "request") render(); });
 $("#pp").addEventListener("click", () => {
@@ -435,14 +459,62 @@ function paintVol() {
   $("#mute").setAttribute("aria-label", audio.muted ? "Unmute" : "Mute");
 }
 
-$("#qbtn").addEventListener("click", () => {
-  const open = $("#upnext").classList.toggle("hidden") === false;
-  document.body.classList.toggle("q-open", open);
-  $("#qbtn").setAttribute("aria-expanded", open);
-});
+// Up next and Lyrics share the right-hand side; opening one closes the other.
+function togglePanel(which) {
+  const sel = { up: "#upnext", ly: "#lyrics" }, btn = { up: "#qbtn", ly: "#lybtn" };
+  const opening = $(sel[which]).classList.contains("hidden");
+  for (const k of Object.keys(sel)) {
+    const open = k === which && opening;
+    $(sel[k]).classList.toggle("hidden", !open);
+    $(btn[k]).setAttribute("aria-expanded", open);
+  }
+  document.body.classList.toggle("q-open", opening);
+  if (opening && which === "ly") loadLyrics();
+}
+$("#qbtn").addEventListener("click", () => togglePanel("up"));
+$("#lybtn").addEventListener("click", () => togglePanel("ly"));
+
+// ---------- lyrics ----------
+const lyrCache = new Map();
+let lyr = { id: null, synced: null, line: -1 };
+async function loadLyrics() {
+  const t = cur(), body = $("#lybody");
+  lyr = { id: t ? t.id : null, synced: null, line: -1 };
+  $("#lyt").textContent = t ? t.title : "";
+  if (!t) { body.innerHTML = empty("Play a song to see its lyrics."); return; }
+  body.innerHTML = `<p class="muted">Looking for lyrics…</p>`;
+  let d = lyrCache.get(t.id);
+  if (d === undefined) {
+    try { const r = await fetch("/api/lyrics?id=" + enc(t.id)); d = r.ok ? await r.json() : r.status === 404 ? null : undefined; } catch { d = undefined; }
+    if (d !== undefined) lyrCache.set(t.id, d);
+  }
+  if (lyr.id !== (cur() || {}).id) return; // the song changed while we were waiting
+  if (d === undefined) { body.innerHTML = empty("Lyrics are unavailable right now."); return; }
+  if (!d || (!d.synced && !d.plain)) { body.innerHTML = empty(d && d.instrumental ? "This song is instrumental." : "No lyrics found for this song."); return; }
+  if (d.synced) {
+    lyr.synced = d.synced;
+    body.innerHTML = d.synced.map(([s, l]) => `<button class="ly" data-t="${s}">${l ? esc(l) : "♪"}</button>`).join("");
+    syncLyrics(true);
+  } else body.innerHTML = `<p class="plain">${esc(d.plain)}</p>`;
+}
+function syncLyrics(force) {
+  if (!lyr.synced || $("#lyrics").classList.contains("hidden")) return;
+  const now = audio.currentTime + 0.25;
+  let lo = 0, hi = lyr.synced.length - 1, idx = -1;
+  while (lo <= hi) { const mid = (lo + hi) >> 1; if (lyr.synced[mid][0] <= now) { idx = mid; lo = mid + 1; } else hi = mid - 1; }
+  if (idx === lyr.line && !force) return;
+  lyr.line = idx;
+  const els = $("#lybody").children;
+  for (let i = 0; i < els.length; i++) els[i].classList.toggle("now", i === idx);
+  const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (els[idx]) els[idx].scrollIntoView({ block: "center", behavior: force || calm ? "auto" : "smooth" });
+}
+$("#lybody").addEventListener("click", (e) => { const b = e.target.closest(".ly"); if (b) { audio.currentTime = +b.dataset.t; audio.play(); } });
+audio.addEventListener("seeked", () => syncLyrics());
 
 audio.addEventListener("timeupdate", () => {
   $("#cur").textContent = fmt(audio.currentTime); $("#dur").textContent = fmt(audio.duration);
+  syncLyrics();
   if (audio.duration) $("#seek").value = (audio.currentTime / audio.duration) * 100;
   const t = cur();
   if (t && !counted && audio.currentTime >= 10) {
