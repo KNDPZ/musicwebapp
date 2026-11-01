@@ -40,7 +40,8 @@
     <section class="pane" id="s-collection">
       <h1>Music collection</h1>
       <div class="card">
-        <div class="form" style="justify-content:space-between;margin-bottom:12px"><h2 style="margin:0">Songs <span class="muted" id="count"></span></h2><button class="btn ghost" id="refreshArt" type="button">Refresh artwork</button></div>
+        <div class="form" style="justify-content:space-between;margin-bottom:12px"><h2 style="margin:0">Songs <span class="muted" id="count"></span></h2><span class="form"><button class="btn ghost" id="refreshArt" type="button">Refresh artwork</button><button class="btn ghost" id="updateBios" type="button">Update artist bio</button></span></div>
+        <p class="msg" id="bioMsg" role="status"></p>
         <label for="songQ" class="hidden">Search songs</label>
         <input id="songQ" type="search" placeholder="Search songs" style="width:100%;max-width:360px;margin-bottom:12px">
         <div style="overflow-x:auto"><table><thead><tr><th>Title</th><th>Artist</th><th>Album</th><th>Plays</th><th></th></tr></thead><tbody id="rows"></tbody></table></div>
@@ -124,18 +125,18 @@
         <h2>Advertising</h2>
         <p class="muted" style="margin-top:0">An ad shows at the top of the front page (Recently added &rsaquo; Songs), above the songs. Write it in HTML, CSS and JavaScript, for example a slider with clickable buttons. Only you can change it. It runs in an isolated frame, so it cannot touch the rest of the site or your admin session. Links open in a new tab; add <code>target="_top"</code> to a link to stay in the app. When the ad is off, the page looks as it did before.</p>
         <div class="form" style="margin-bottom:12px">
-          <label class="check"><input type="checkbox" id="adOn"> Show the ad on the front page</label>
-          <label for="adH" class="muted">Height (px)</label><input id="adH" type="number" min="60" max="1000" value="340">
+          <label class="check"><input type="checkbox" id="spOn"> Show the ad on the front page</label>
+          <label for="spH" class="muted">Height (px)</label><input id="spH" type="number" min="60" max="1000" value="340">
         </div>
-        <label for="adCode" class="muted">Ad code (HTML, CSS and JavaScript)</label>
-        <textarea class="code" id="adCode" spellcheck="false" placeholder="Paste or write your ad here"></textarea>
+        <label for="spCode" class="muted">Ad code (HTML, CSS and JavaScript)</label>
+        <textarea class="code" id="spCode" spellcheck="false" placeholder="Paste or write your ad here"></textarea>
         <div class="form" style="margin-top:12px">
-          <button class="btn" id="adSave" type="button">Save advertising</button>
-          <button class="btn ghost" id="adPreviewBtn" type="button">Preview</button>
-          <button class="btn ghost" id="adSample" type="button">Insert sample slider</button>
-          <span class="msg" id="adMsg" role="status"></span>
+          <button class="btn" id="spSave" type="button">Save advertising</button>
+          <button class="btn ghost" id="spPreviewBtn" type="button">Preview</button>
+          <button class="btn ghost" id="spSample" type="button">Insert sample slider</button>
+          <span class="msg" id="spMsg" role="status"></span>
         </div>
-        <div id="adPrev" style="margin-top:16px"></div>
+        <div id="spPrev" style="margin-top:16px"></div>
       </div>
     </section>
 
@@ -169,6 +170,8 @@
     <input id="cur" type="password" autocomplete="current-password" required>
     <label for="nw" class="muted">New password (8+ characters)</label>
     <input id="nw" type="password" autocomplete="new-password" minlength="8" required>
+    <label for="nw2" class="muted">Confirm new password</label>
+    <input id="nw2" type="password" autocomplete="new-password" minlength="8" required>
     <p class="msg err" id="pwMsg" role="alert"></p>
     <div class="form" style="justify-content:flex-end"><button class="btn ghost" type="button" id="pwCancel">Cancel</button><button class="btn" type="submit">Save password</button></div>
   </form>

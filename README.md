@@ -76,10 +76,16 @@ Song, album and artist requests leave the queue automatically when a matching so
 request leaves when you create a playlist with the same name (or remove it in Admin > Request queue).
 Limits: 10 requests per visitor and 20 per network per day, 500 waiting in total.
 
-## Artist biography
+## Artist biography, genre and radio
 
-An artist page shows a short biography from Wikipedia (with a link). It is cached in R2; artists with no matching
-Wikipedia page show none.
+An artist page shows a short Wikipedia biography and the artist's genres (from Wikidata). Both are saved in the database the first time
+anyone opens the artist (uploads fetch them in advance), so later visitors get them instantly. Each time the artist is opened, Wikipedia is
+checked in the background and the saved copy is rewritten only if the page really changed. In Admin > Music collection, **Update artist bio**
+does the same check for every artist (and fills in genres).
+
+The **Radio** button on an artist page builds a queue of 30 or more songs from your library, starting with a song by that artist and mixing in
+other artists with related genres (it tops up from the rest of the library when too few match). It is a temporary queue, shown under Up next.
+Radio needs genres, so run **Update artist bio** once after deploying to fill them in for the artists you already have.
 
 ## Admin extras
 

@@ -224,15 +224,15 @@ async function processOne({ file, ctx, n }) {
     const t = await send(file, tags, hash, pid, (p) => { bar.style.width = p * 100 + "%"; stat.frac = p; paintBatch(); });
     bar.style.width = "100%";
     if (tags.cover) await fetch(`/api/admin/tracks/${t.id}/cover`, { method: "PUT", headers: { "content-type": tags.cover.type }, body: tags.cover });
-    await warm([t]); // fetch missing artwork now so listeners see it right away
+    await warm([t], undefined, true); // fetch artwork and biographies now so listeners see them right away
     status.textContent += pid ? " — uploaded and added to the playlist" : " — uploaded";
     stat.up++;
   } catch (err) { status.textContent = "Failed: " + err.message; status.style.color = "var(--danger)"; stat.fail++; }
 }
 
-async function warm(list, onStep = () => {}) {
+async function warm(list, onStep = () => {}, withBio = false) {
   const urls = new Set();
-  list.forEach((t) => { artistsOf(t).forEach((a) => urls.add(artistArt(a))); urls.add(albumArt(t)); });
+  list.forEach((t) => { artistsOf(t).forEach((a) => { urls.add(artistArt(a)); if (withBio && !/^unknown/i.test(a)) urls.add("/api/bio?name=" + encodeURIComponent(a)); }); urls.add(albumArt(t)); });
   urls.delete("");
   let n = 0;
   for (const u of urls) { await fetch(u).catch(() => {}); onStep(++n, urls.size); await new Promise((r) => setTimeout(r, 200)); }
@@ -243,6 +243,26 @@ $("#refreshArt").addEventListener("click", async (e) => {
   await warm(window.__tracks || [], (n, total) => (b.textContent = `Fetching artwork ${n}/${total}…`));
   b.textContent = "Refresh artwork"; b.disabled = false;
 });
+// Update artist bio: checks Wikipedia for every artist; only artists whose page changed are rewritten.
+$("#updateBios").addEventListener("click", async (e) => {
+  const b = e.target, msg = $("#bioMsg");
+  const names = [...new Set((window.__tracks || []).flatMap((t) => artistsOf(t)))].filter((n) => !/^unknown/i.test(n));
+  if (!names.length) { flashMsg("#bioMsg", "There are no artists yet.", true); return; }
+  b.disabled = true; msg.className = "msg"; msg.textContent = "";
+  const c = { added: 0, updated: 0, unchanged: 0, none: 0, failed: 0 };
+  for (let i = 0; i < names.length; i++) {
+    b.textContent = `Checking bios ${i + 1}/${names.length}…`;
+    try {
+      const r = await post("/api/admin/bio/refresh", { name: names[i] });
+      const j = await r.json().catch(() => ({}));
+      c[r.ok && c[j.status] !== undefined ? j.status : "failed"]++;
+    } catch { c.failed++; }
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  b.textContent = "Update artist bio"; b.disabled = false;
+  flashMsg("#bioMsg", `Checked ${names.length} artists: ${c.added} added, ${c.updated} updated, ${c.unchanged} unchanged, ${c.none} not found on Wikipedia${c.failed ? `, ${c.failed} could not be checked` : ""}.`, c.failed > 0);
+});
+
 const drop = $("#drop");
 $("#files").addEventListener("change", (e) => { enqueue(e.target.files); e.target.value = ""; });
 ["dragenter", "dragover"].forEach((n) => drop.addEventListener(n, (e) => { e.preventDefault(); drop.classList.add("over"); }));
@@ -259,7 +279,7 @@ function paintFavicon() {
 async function loadSite() {
   try { site = await (await fetch("/api/site")).json(); } catch { return; }
   $("#siteName").value = site.name; $("#tabTitle").value = site.title;
-  $("#adOn").checked = site.ad.enabled; $("#adH").value = site.ad.height; $("#adCode").value = site.ad.html;
+  $("#spOn").checked = site.ad.enabled; $("#spH").value = site.ad.height; $("#spCode").value = site.ad.html;
   document.title = `Admin · ${site.title || site.name}`;
   paintFavicon();
 }
@@ -283,51 +303,51 @@ $("#favRm").addEventListener("click", async () => {
 });
 
 const SAMPLE_AD = `<style>
-  .ad{position:relative;height:100%;overflow:hidden;border-radius:16px}
-  .slide{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;gap:12px;padding:32px 64px;opacity:0;visibility:hidden;transition:opacity .6s;color:#fff}
-  .slide.on{opacity:1;visibility:visible}
-  .slide h2{margin:0;font-size:34px}
-  .slide p{margin:0;max-width:46ch;font-size:16px}
-  .slide a{align-self:flex-start;padding:12px 24px;border-radius:24px;background:#C8F169;color:#131211;font-weight:800;text-decoration:none}
-  .s1{background:linear-gradient(135deg,#1f6f5c,#0d2b24)}
-  .s2{background:linear-gradient(135deg,#6a3fbf,#1d1236)}
-  .s3{background:linear-gradient(135deg,#bf5a3f,#36170f)}
-  .dots{position:absolute;bottom:14px;left:0;right:0;display:flex;justify-content:center;gap:8px}
-  .dots button{width:12px;height:12px;border-radius:50%;border:0;background:rgba(255,255,255,.4);cursor:pointer;padding:0}
-  .dots button.on{background:#fff}
-  .nav{position:absolute;top:50%;transform:translateY(-50%);width:44px;height:44px;border-radius:50%;border:0;background:rgba(0,0,0,.4);color:#fff;font-size:22px;cursor:pointer}
-  .prev{left:12px}.next{right:12px}
-  @media (prefers-reduced-motion:reduce){.slide{transition:none}}
+  .deck{position:relative;height:100%;overflow:hidden;border-radius:16px}
+  .sl{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;gap:12px;padding:32px 64px;opacity:0;visibility:hidden;transition:opacity .6s;color:#fff}
+  .sl.on{opacity:1;visibility:visible}
+  .sl h2{margin:0;font-size:34px}
+  .sl p{margin:0;max-width:46ch;font-size:16px}
+  .sl a{align-self:flex-start;padding:12px 24px;border-radius:24px;background:#C8F169;color:#131211;font-weight:800;text-decoration:none}
+  .c1{background:linear-gradient(135deg,#1f6f5c,#0d2b24)}
+  .c2{background:linear-gradient(135deg,#6a3fbf,#1d1236)}
+  .c3{background:linear-gradient(135deg,#bf5a3f,#36170f)}
+  .pips{position:absolute;bottom:14px;left:0;right:0;display:flex;justify-content:center;gap:8px}
+  .pips button{width:12px;height:12px;border-radius:50%;border:0;background:rgba(255,255,255,.4);cursor:pointer;padding:0}
+  .pips button.on{background:#fff}
+  .arr{position:absolute;top:50%;transform:translateY(-50%);width:44px;height:44px;border-radius:50%;border:0;background:rgba(0,0,0,.4);color:#fff;font-size:22px;cursor:pointer}
+  .back{left:12px}.fwd{right:12px}
+  @media (prefers-reduced-motion:reduce){.sl{transition:none}}
 </style>
-<div class="ad" id="ad">
-  <div class="slide s1 on"><h2>Your headline here</h2><p>A short line about your offer or announcement.</p><a href="https://example.com" target="_blank" rel="noopener">Learn more</a></div>
-  <div class="slide s2"><h2>Second slide</h2><p>Change the text, colours and links to anything you like.</p><a href="https://example.com" target="_blank" rel="noopener">Visit</a></div>
-  <div class="slide s3"><h2>Third slide</h2><p>Use target="_top" on a link to open a page inside this app.</p><a href="/#artists" target="_top">Browse artists</a></div>
-  <button class="nav prev" aria-label="Previous slide">‹</button><button class="nav next" aria-label="Next slide">›</button>
-  <div class="dots"></div>
+<div class="deck" id="deck">
+  <div class="sl c1 on"><h2>Your headline here</h2><p>A short line about what you want to show.</p><a href="https://example.com" target="_blank" rel="noopener">Learn more</a></div>
+  <div class="sl c2"><h2>Second slide</h2><p>Change the text, colours and links to anything you like.</p><a href="https://example.com" target="_blank" rel="noopener">Visit</a></div>
+  <div class="sl c3"><h2>Third slide</h2><p>Use target="_top" on a link to open a page inside this app.</p><a href="/#artists" target="_top">Browse artists</a></div>
+  <button class="arr back" aria-label="Previous slide">‹</button><button class="arr fwd" aria-label="Next slide">›</button>
+  <div class="pips"></div>
 </div>
 <script>
 (function () {
-  var s = [].slice.call(document.querySelectorAll('.slide')), d = document.querySelector('.dots'), i = 0, t;
+  var s = [].slice.call(document.querySelectorAll('.sl')), d = document.querySelector('.pips'), i = 0, t;
   s.forEach(function (_, k) { var b = document.createElement('button'); b.setAttribute('aria-label', 'Slide ' + (k + 1)); b.onclick = function () { go(k); }; d.appendChild(b); });
   function go(n) { i = (n + s.length) % s.length; s.forEach(function (e, k) { e.classList.toggle('on', k === i); }); [].forEach.call(d.children, function (b, k) { b.classList.toggle('on', k === i); }); }
-  document.querySelector('.prev').onclick = function () { go(i - 1); };
-  document.querySelector('.next').onclick = function () { go(i + 1); };
+  document.querySelector('.back').onclick = function () { go(i - 1); };
+  document.querySelector('.fwd').onclick = function () { go(i + 1); };
   function play() { t = setInterval(function () { go(i + 1); }, 5000); } function stop() { clearInterval(t); }
-  var ad = document.getElementById('ad'); ad.onmouseenter = stop; ad.onmouseleave = play;
+  var deck = document.getElementById('deck'); deck.onmouseenter = stop; deck.onmouseleave = play;
   if (!matchMedia('(prefers-reduced-motion: reduce)').matches) play();
   go(0);
 })();
 </script>`;
-$("#adSample").addEventListener("click", () => { if (!$("#adCode").value.trim() || confirm("Replace the code in the box with the sample slider?")) $("#adCode").value = SAMPLE_AD; });
-$("#adPreviewBtn").addEventListener("click", () => {
+$("#spSample").addEventListener("click", () => { if (!$("#spCode").value.trim() || confirm("Replace the code in the box with the sample slider?")) $("#spCode").value = SAMPLE_AD; });
+$("#spPreviewBtn").addEventListener("click", () => {
   const f = document.createElement("iframe");
-  f.title = "Ad preview"; f.setAttribute("sandbox", AD_SANDBOX); f.className = "adframe";
-  f.style.height = (Math.min(1000, Math.max(60, +$("#adH").value || 340))) + "px";
-  f.srcdoc = adDoc($("#adCode").value);
-  $("#adPrev").replaceChildren(f);
+  f.title = "Ad preview"; f.setAttribute("sandbox", AD_SANDBOX); f.className = "spframe";
+  f.style.height = (Math.min(1000, Math.max(60, +$("#spH").value || 340))) + "px";
+  f.srcdoc = adDoc($("#spCode").value);
+  $("#spPrev").replaceChildren(f);
 });
-$("#adSave").addEventListener("click", () => saveSettings({ ad_enabled: $("#adOn").checked, ad_html: $("#adCode").value, ad_height: $("#adH").value }, "#adMsg"));
+$("#spSave").addEventListener("click", () => saveSettings({ ad_enabled: $("#spOn").checked, ad_html: $("#spCode").value, ad_height: $("#spH").value }, "#spMsg"));
 
 // ---------- account settings: the password window only opens on click ----------
 const pwDlg = $("#pwDlg");
@@ -335,7 +355,8 @@ $("#pwOpen").addEventListener("click", () => { $("#pwForm").reset(); $("#pwMsg")
 $("#pwCancel").addEventListener("click", () => pwDlg.close());
 $("#pwForm").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const r = await post("/api/admin/password", { current: $("#cur").value, next: $("#nw").value });
+  if ($("#nw").value !== $("#nw2").value) { $("#pwMsg").textContent = "The new passwords don't match."; $("#nw2").focus(); return; }
+  const r = await post("/api/admin/password", { current: $("#cur").value, next: $("#nw").value, confirm: $("#nw2").value });
   if (r.ok) { pwDlg.close(); flashMsg("#acctMsg", "Password changed. Other devices were logged out."); }
   else $("#pwMsg").textContent = (await r.json()).error;
 });

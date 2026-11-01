@@ -1,3 +1,4 @@
+import { radioIds } from "/radio.js";
 import { artistArt, albumArt, albumName, artistsOf, artistLine, primaryArtist, adDoc, AD_SANDBOX } from "/art.js";
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -30,7 +31,7 @@ function applySite() {
 function adSlot() {
   const ad = site.ad;
   if (!ad || !ad.enabled || !ad.html.trim()) return "";
-  return `<div class="adslot"><iframe class="adframe" title="Advertisement" sandbox="${AD_SANDBOX}" referrerpolicy="no-referrer" style="height:${ad.height}px" srcdoc="${esc(adDoc(ad.html))}"></iframe></div>`;
+  return `<div class="spslot"><iframe class="spframe" title="Featured" sandbox="${AD_SANDBOX}" referrerpolicy="no-referrer" style="height:${ad.height}px" srcdoc="${esc(adDoc(ad.html))}"></iframe></div>`;
 }
 applySite();
 
@@ -90,7 +91,7 @@ function row(t, num, extra = "", cover = false) {
 const songTiles = (l, extra) => `<div class="grid s">${l.map((t) =>
   `<button class="tile sq song" data-id="${t.id}">${art(albumArt(t), albumName(t) || t.title)}<b>${esc(t.title)}</b><span class="muted">${esc(artistLine(t))}</span>${extra ? `<span class="muted">${esc(extra(t))}</span>` : ""}</button>`).join("")}</div>`;
 const empty = (msg) => `<div class="empty">${msg}</div>`;
-const actions = () => `<div class="form" style="margin:12px 0"><button class="btn" data-act="play">Play</button><button class="btn ghost" data-act="shuf">Shuffle</button></div>`;
+const actions = (radio) => `<div class="form" style="margin:12px 0"><button class="btn" data-act="play">Play</button><button class="btn ghost" data-act="shuf">Shuffle</button>${radio ? `<button class="btn ghost" data-act="radio" title="Songs from the same genre, to discover more music"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-radio"/></svg>Radio</button>` : ""}</div>`;
 const noView = () => { view = { ids: [], label: "", pl: null }; };
 
 function render() {
@@ -205,17 +206,30 @@ function artistPage(el, name) {
   view = { ids, label: name, pl: null };
   const albums = names.filter((g) => g).length;
   el.innerHTML = `<a class="back" href="#artists">← All artists</a>
-    <div class="hero">${art(artistArt(name), name, "round")}<div><h1>${esc(name)}</h1><span class="muted">${plural(ts.length, "song")}${albums ? " · " + plural(albums, "album") : ""}</span><p class="bio" id="bio"></p>${actions()}</div></div>${body}`;
+    <div class="hero">${art(artistArt(name), name, "round")}<div><h1>${esc(name)}</h1><span class="muted">${plural(ts.length, "song")}${albums ? " · " + plural(albums, "album") : ""}<span id="genre"></span></span><p class="bio" id="bio" aria-live="polite">Loading biography…</p>${actions(true)}</div></div>${body}`;
   loadBio(name);
 }
+const genreLine = (g) => g.slice(0, 3).map((x) => x.replace(/\b\p{L}/gu, (c) => c.toUpperCase())).join(", ");
+const genreCache = {};
 async function loadBio(name) {
-  try {
-    const r = await fetch("/api/bio?name=" + enc(name));
-    if (!r.ok) return;
-    const b = await r.json(), el = $("#bio"), cur = parse();
-    if (el && cur.a === "artist" && dec(cur.arg) === name)
-      el.innerHTML = `${esc(b.text)} <a href="${esc(b.url)}" target="_blank" rel="noopener">${esc(b.source)}</a>`;
-  } catch {}
+  let b = null;
+  try { const r = await fetch("/api/bio?name=" + enc(name)); if (r.ok) b = await r.json(); } catch {}
+  const el = $("#bio"), cur = parse();
+  if (!el || cur.a !== "artist" || dec(cur.arg) !== name) return; // the page changed while we waited
+  el.textContent = "";
+  if (b && b.genres && b.genres.length) { genreCache[name] = b.genres; $("#genre").textContent = " · " + genreLine(b.genres); }
+  if (b && b.text) el.innerHTML = `${esc(b.text)} <a href="${esc(b.url)}" target="_blank" rel="noopener">${esc(b.source)}</a>`;
+}
+
+// Radio: 30+ songs from the same genre (from your library), starting with a song by this artist
+async function startRadio(name) {
+  let genres = {};
+  try { genres = await (await fetch("/api/genres")).json(); } catch {}
+  genres = { ...genres, ...genreCache };
+  const { ids, matched } = radioIds(tracks, genres, name);
+  if (!ids.length) return;
+  startQueue(ids, ids[0], `Radio · ${name}`, null, "radio");
+  if (!matched) popup("Radio is mixing your whole library", `We don't have genre information for ${name} yet, or nothing else in the library matches it, so this radio mixes songs from everywhere.`);
 }
 
 // Playlist cover: your own image, else 9 different album covers (9+ albums) or a 4-cover grid.
@@ -459,6 +473,7 @@ $("#list").addEventListener("click", (e) => {
   if (k) { reqKind = k.dataset.kind; requestForm($("#list")); return; }
   const b = e.target.closest("[data-act]");
   if (b) {
+    if (b.dataset.act === "radio") { startRadio(dec(parse().arg)); return; }
     if (!view.ids.length) return;
     if (b.dataset.act === "play") startQueue(view.ids, view.ids[0], view.label, view.pl);
     else { const q = shuffled(view.ids); startQueue(q, q[0], `Shuffling ${view.label}`, view.pl, "list"); }

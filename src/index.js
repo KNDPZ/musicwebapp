@@ -48,6 +48,7 @@ function init(env) {
       q("CREATE TABLE IF NOT EXISTS playlist_tracks (playlist_id TEXT NOT NULL, track_id TEXT NOT NULL, added_at INTEGER NOT NULL, PRIMARY KEY (playlist_id, track_id))"),
       q("CREATE TABLE IF NOT EXISTS reactions (track_id TEXT NOT NULL, voter TEXT NOT NULL, kind TEXT NOT NULL, PRIMARY KEY (track_id, voter, kind))"),
       q("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"),
+      q("CREATE TABLE IF NOT EXISTS artist_info (name TEXT PRIMARY KEY, text TEXT, url TEXT, wtitle TEXT, rev TEXT, genres TEXT NOT NULL DEFAULT '[]', checked_at INTEGER NOT NULL)"),
       q(`CREATE TABLE IF NOT EXISTS requests (
         id TEXT PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL, artist TEXT NOT NULL DEFAULT '', album TEXT NOT NULL DEFAULT '',
         image TEXT, url TEXT, dedupe TEXT NOT NULL UNIQUE, voter TEXT NOT NULL, ip TEXT NOT NULL, created_at INTEGER NOT NULL)`),
@@ -234,7 +235,7 @@ async function serveArt(env, url) {
 }
 
 // ---------- requests, suggestions, biographies ----------
-let DZ = "https://api.deezer.com", WIKI = "https://en.wikipedia.org"; // overridable with env vars for testing
+let DZ = "https://api.deezer.com", WIKI = "https://en.wikipedia.org", WIKIDATA = "https://www.wikidata.org"; // overridable with env vars for testing
 const fold = (s) => String(s ?? "").normalize("NFKD").replace(/\p{M}/gu, "");
 const core = (s) => norm(fold(String(s ?? "").replace(/[(\[][^)\]]*[)\]]/g, " ").replace(/\s+-\s+.*$/, "")));
 const same = (a, b) => { a = core(a); b = core(b); return !!a && a === b; };
@@ -299,44 +300,94 @@ async function fulfil(env, t) {
 }
 
 const MUSICY = /\b(band|musician|singer|rapper|songwriter|group|duo|trio|quartet|dj|composer|vocalist|guitarist|producer|artist|metal|rock|pop|hip hop)\b/i;
-async function wikipediaBio(name) {
-  for (const q of [`${name} (band OR musician OR singer OR rapper)`, name]) {
-    const s = await fetch(`${WIKI}/w/api.php?action=query&list=search&srlimit=3&format=json&srsearch=${encodeURIComponent(q)}`, { headers: UA });
-    if (!s.ok) throw new Error("wikipedia unavailable");
-    for (const h of (await s.json())?.query?.search || []) {
-      const r = await fetch(`${WIKI}/api/rest_v1/page/summary/${encodeURIComponent(String(h.title).replace(/ /g, "_"))}`, { headers: UA });
-      if (!r.ok) continue;
-      const d = await r.json();
-      const base = String(d.title || "").replace(/\s*\(.*\)\s*$/, "");
-      if (d.type !== "standard" || !d.extract || !sameName(base, name)) continue;
-      if (!MUSICY.test(`${d.description || ""} ${d.extract.slice(0, 300)}`)) continue;
-      let text = d.extract.replace(/\s+/g, " ").trim();
-      if (text.length > 520) {
-        const cut = text.slice(0, 520), i = cut.lastIndexOf(". ");
-        text = i > 200 ? cut.slice(0, i + 1) : cut.replace(/\s+\S*$/, "") + "…";
-      }
-      return { text, url: `https://en.wikipedia.org/wiki/${encodeURIComponent(String(d.title).replace(/ /g, "_"))}` };
-    }
+const wcf = { cacheTtl: 300, cacheEverything: true }; // Wikimedia answers are reused for 5 minutes at the edge
+async function wikiSummary(title) {
+  const r = await fetch(`${WIKI}/api/rest_v1/page/summary/${encodeURIComponent(String(title).replace(/ /g, "_"))}`, { headers: UA, cf: wcf });
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error("wikipedia unavailable");
+  return r.json();
+}
+function fromSummary(d) {
+  let text = String(d.extract || "").replace(/\s+/g, " ").trim();
+  if (text.length > 520) {
+    const cut = text.slice(0, 520), i = cut.lastIndexOf(". ");
+    text = i > 200 ? cut.slice(0, i + 1) : cut.replace(/\s+\S*$/, "") + "…";
   }
+  return { text, url: `https://en.wikipedia.org/wiki/${encodeURIComponent(String(d.title).replace(/ /g, "_"))}`, wtitle: String(d.title), rev: String(d.revision || ""), qid: d.wikibase_item || "" };
+}
+function pickSummary(d, name) {
+  if (!d || d.type !== "standard" || !d.extract) return null;
+  const base = String(d.title || "").replace(/\s*\(.*\)\s*$/, "");
+  if (!sameName(base, name) || !MUSICY.test(`${d.description || ""} ${d.extract.slice(0, 300)}`)) return null;
+  return fromSummary(d);
+}
+// Genres come from Wikidata ("genre" property P136) for the artist's Wikipedia page.
+async function wikidataGenres(qid) {
+  if (!/^Q\d+$/.test(qid || "")) return [];
+  const c = await fetch(`${WIKIDATA}/w/api.php?action=wbgetclaims&entity=${qid}&property=P136&format=json`, { headers: UA, cf: wcf });
+  if (!c.ok) throw new Error("wikidata unavailable");
+  const ids = ((await c.json()).claims?.P136 || []).filter((x) => x.rank !== "deprecated").map((x) => x.mainsnak?.datavalue?.value?.id).filter(Boolean).slice(0, 6);
+  if (!ids.length) return [];
+  const l = await fetch(`${WIKIDATA}/w/api.php?action=wbgetentities&ids=${ids.join("|")}&props=labels&languages=en&format=json`, { headers: UA, cf: wcf });
+  if (!l.ok) throw new Error("wikidata unavailable");
+  const ents = (await l.json()).entities || {};
+  return uniq(ids.map((id) => ents[id]?.labels?.en?.value).filter(Boolean));
+}
+const withGenres = async (hit) => ({ ...hit, genres: await wikidataGenres(hit.qid).catch(() => []) });
+// Looks for the artist's page. The likely page names are asked for all at once, which is much faster than searching.
+async function wikiLookup(name) {
+  const res = await Promise.allSettled([name, `${name} (band)`, `${name} (musician)`, `${name} (singer)`, `${name} (rapper)`].map(wikiSummary));
+  for (const r of res) if (r.status === "fulfilled") { const hit = pickSummary(r.value, name); if (hit) return withGenres(hit); }
+  if (res.some((r) => r.status === "rejected")) throw new Error("wikipedia unavailable"); // not "no page": try again later
+  const s = await fetch(`${WIKI}/w/api.php?action=query&list=search&srlimit=3&format=json&srsearch=${encodeURIComponent(`${name} (band OR musician OR singer OR rapper)`)}`, { headers: UA, cf: wcf });
+  if (!s.ok) throw new Error("wikipedia unavailable");
+  for (const h of (await s.json())?.query?.search || []) { const hit = pickSummary(await wikiSummary(h.title), name); if (hit) return withGenres(hit); }
   return null;
 }
-async function serveBio(env, url) {
-  const name = clean(url.searchParams.get("name"));
-  if (!name || /^unknown/i.test(name) || !(await libraryHasArtist(env.DB, name)))
-    return json({ error: "none" }, 404, { "cache-control": "public, max-age=300" });
-  const key = `bio/${(await sha256(norm(name))).slice(0, 24)}`;
-  let rec = null;
-  const obj = await env.MUSIC.get(key);
-  if (obj) { try { rec = await obj.json(); } catch {} }
-  if (rec?.none && Date.now() - rec.at > RETRY_MS) rec = null;
-  if (!rec) {
-    let found;
-    try { found = await wikipediaBio(name); } catch { return json({ error: "unavailable" }, 502); }
-    rec = found ? { ...found, at: Date.now() } : { none: true, at: Date.now() };
-    await env.MUSIC.put(key, JSON.stringify(rec), { httpMetadata: { contentType: "application/json" } });
+const parseGenres = (r) => { try { const a = JSON.parse(r?.genres || "[]"); return Array.isArray(a) ? a : []; } catch { return []; } };
+async function infoSave(DB, name, d) {
+  await DB.prepare(`INSERT INTO artist_info (name, text, url, wtitle, rev, genres, checked_at) VALUES (?,?,?,?,?,?,?)
+    ON CONFLICT(name) DO UPDATE SET text = excluded.text, url = excluded.url, wtitle = excluded.wtitle, rev = excluded.rev, genres = excluded.genres, checked_at = excluded.checked_at`)
+    .bind(name, d ? d.text : null, d ? d.url : null, d ? d.wtitle : null, d ? d.rev : null, JSON.stringify(d ? d.genres : []), Date.now()).run();
+}
+// Brings the saved copy up to date. Nothing is written when Wikipedia has not changed. Returns added | updated | unchanged | none.
+async function refreshInfo(env, name, row) {
+  const DB = env.DB;
+  if (!row || !row.wtitle) { // nothing useful saved yet: look the artist up
+    const d = await wikiLookup(name);
+    await infoSave(DB, name, d);
+    return d ? "added" : "none";
   }
-  return rec.none ? json({ error: "none" }, 404, { "cache-control": "public, max-age=300" })
-    : json({ text: rec.text, url: rec.url, source: "Wikipedia" }, 200, { "cache-control": "public, max-age=3600" });
+  const s = await wikiSummary(row.wtitle);
+  if (!s || !s.extract) return "unchanged";
+  const cur = fromSummary(s), old = parseGenres(row);
+  const same = cur.rev ? cur.rev === row.rev : cur.text === row.text; // Wikipedia's revision number says if the page changed
+  if (same && old.length) return "unchanged";
+  const genres = await wikidataGenres(cur.qid).catch(() => []);
+  if (same) { if (!genres.length) return "unchanged"; await infoSave(DB, name, { ...cur, genres }); return "updated"; }
+  const next = { ...cur, genres: genres.length ? genres : old };
+  if (next.text === row.text && JSON.stringify(next.genres) === JSON.stringify(old)) { // edited elsewhere on the page: only remember the new revision
+    await DB.prepare("UPDATE artist_info SET rev = ? WHERE name = ?").bind(cur.rev, name).run();
+    return "unchanged";
+  }
+  await infoSave(DB, name, next);
+  return "updated";
+}
+// The saved copy is returned straight away; Wikipedia is checked in the background and the copy is only rewritten if the page changed.
+async function serveBio(env, url, ctx) {
+  const name = clean(url.searchParams.get("name"));
+  const none = () => json({ error: "none" }, 404, { "cache-control": "public, max-age=300" });
+  if (!name || /^unknown/i.test(name) || !(await libraryHasArtist(env.DB, name))) return none();
+  const get = () => env.DB.prepare("SELECT * FROM artist_info WHERE name = ?").bind(name).first();
+  let row = await get();
+  if (row && row.wtitle) { const job = refreshInfo(env, name, row).catch(() => {}); if (ctx) ctx.waitUntil(job); }
+  else if (!row || Date.now() - row.checked_at > RETRY_MS) {
+    try { await refreshInfo(env, name, row); } catch { return json({ error: "unavailable" }, 502); }
+    row = await get();
+  }
+  const genres = parseGenres(row);
+  if (!row || (!row.text && !genres.length)) return none();
+  return json({ text: row.text, url: row.url, source: "Wikipedia", genres }, 200, { "cache-control": "no-cache" });
 }
 
 // ---------- lyrics ----------
@@ -391,7 +442,7 @@ async function serveLyrics(env, url) {
 const TRACK_COLS = `t.id, t.title, t.artist, t.artists, t.album, t.track_no, t.duration, t.plays, t.created_at,
   COALESCE(SUM(r.kind = 'heart'), 0) AS hearts, COALESCE(SUM(r.kind = 'like'), 0) AS likes, COALESCE(SUM(r.kind = 'dislike'), 0) AS dislikes`;
 
-async function api(req, env, url) {
+async function api(req, env, url, ctx) {
   const path = url.pathname;
   const m = req.method;
   const DB = env.DB;
@@ -415,7 +466,11 @@ async function api(req, env, url) {
   }
   if (path === "/api/site" && m === "GET") return json(await siteSettings(DB));
   if (path === "/api/suggest" && m === "GET") return suggest(url);
-  if (path === "/api/bio" && m === "GET") return serveBio(env, url);
+  if (path === "/api/bio" && m === "GET") return serveBio(env, url, ctx);
+  if (path === "/api/genres" && m === "GET") {
+    const { results } = await DB.prepare("SELECT name, genres FROM artist_info WHERE wtitle IS NOT NULL AND genres != '[]'").all();
+    return json(Object.fromEntries(results.map((r) => [r.name, parseGenres(r)])), 200, { "cache-control": "public, max-age=60" });
+  }
   if (path === "/api/lyrics" && m === "GET") return serveLyrics(env, url);
   if (path === "/api/requests" && m === "GET") {
     const { results } = await DB.prepare("SELECT id, kind, title, artist, album, image, url, created_at FROM requests ORDER BY created_at, rowid").all();
@@ -500,6 +555,14 @@ async function api(req, env, url) {
   const sid = await session(req, env);
   if (!sid) return json({ error: "Not logged in." }, 401);
 
+  if (path === "/api/admin/bio/refresh" && m === "POST") {
+    const b = await req.json().catch(() => ({}));
+    const name = clean(b.name);
+    if (!name || !(await libraryHasArtist(DB, name))) return json({ error: "Artist not found." }, 404);
+    const row = await DB.prepare("SELECT * FROM artist_info WHERE name = ?").bind(name).first();
+    try { return json({ status: await refreshInfo(env, name, row) }); }
+    catch { return json({ error: "Wikipedia is unavailable right now." }, 502); }
+  }
   if (path === "/api/admin/settings" && m === "PUT") {
     const b = await req.json().catch(() => ({}));
     const stmts = [];
@@ -684,7 +747,7 @@ async function api(req, env, url) {
     } while (cursor);
     await DB.batch([
       DB.prepare("DELETE FROM playlist_tracks"), DB.prepare("DELETE FROM playlists"),
-      DB.prepare("DELETE FROM reactions"), DB.prepare("DELETE FROM tracks"), DB.prepare("DELETE FROM requests"),
+      DB.prepare("DELETE FROM reactions"), DB.prepare("DELETE FROM tracks"), DB.prepare("DELETE FROM requests"), DB.prepare("DELETE FROM artist_info"),
     ]);
     return json({ ok: true, removed });
   }
@@ -694,6 +757,7 @@ async function api(req, env, url) {
     if (!safeEq(await pbkdf2(String(b.current ?? ""), row.salt), row.hash))
       return json({ error: "Current password is wrong." }, 403);
     const next = String(b.next ?? "");
+    if (b.confirm !== undefined && String(b.confirm) !== next) return json({ error: "The new passwords don't match." }, 400);
     if (next.length < 8) return json({ error: "New password must be at least 8 characters." }, 400);
     if (next === b.current) return json({ error: "New password must be different." }, 400);
     const salt = hex(crypto.getRandomValues(new Uint8Array(16)));
@@ -707,17 +771,18 @@ async function api(req, env, url) {
 }
 
 export default {
-  async fetch(req, env) {
+  async fetch(req, env, ctx) {
     const url = new URL(req.url);
     if (env.DEEZER_API) DZ = env.DEEZER_API;
     if (env.WIKI_API) WIKI = env.WIKI_API;
     if (env.LRCLIB_API) LRC = env.LRCLIB_API;
+    if (env.WIKIDATA_API) WIKIDATA = env.WIKIDATA_API;
     try {
       await init(env);
       if (url.pathname === "/site/favicon") return await serveFavicon(env);
       if (url.pathname.startsWith("/audio/")) return await serveAudio(req, env, url.pathname.slice(7));
       if (["/art/album", "/art/artist", "/art/track", "/art/playlist"].includes(url.pathname)) return await serveArt(env, url);
-      if (url.pathname.startsWith("/api/")) return await api(req, env, url);
+      if (url.pathname.startsWith("/api/")) return await api(req, env, url, ctx);
     } catch (e) {
       return json({ error: "Server error: " + e.message }, 500);
     }
