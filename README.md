@@ -61,9 +61,10 @@ Track numbers come from the song's track tag. A song keeps its number (for examp
 
 ## Lyrics
 
-The **Lyrics** button (player bar, before the shuffle buttons) opens a side panel. Lyrics come from LRCLIB (free, no key). When time-synced
-lyrics exist the current line is highlighted as the song plays and clicking a line jumps to it; otherwise plain lyrics are shown.
-Results are cached in R2. Lyrics belong to their owners.
+The **Lyrics** button (microphone icon, right side of the player) opens a side panel. Two free sources are asked at the same time, with
+variations of the title and each artist on the song: LRCLIB (time-synced lyrics, the current line is highlighted and clicking a line jumps to it)
+and lyrics.ovh (plain lyrics). Synced lyrics are preferred, otherwise whatever plain lyrics were found. Results are cached in R2.
+Lyrics belong to their owners.
 
 ## Requests
 
@@ -76,6 +77,16 @@ Song, album and artist requests leave the queue automatically when a matching so
 request leaves when you create a playlist with the same name (or remove it in Admin > Request queue).
 Limits: 10 requests per visitor and 20 per network per day, 500 waiting in total.
 
+## Spotify playlist requests
+
+Spotify's official API no longer lets apps read other people's playlists, so the name, picture and song list (roughly the first 50-100 songs)
+are read from the public Spotify embed page. That is unofficial and may stop working; the request is still queued without a song count if it fails.
+In Admin > Requests each playlist shows `matched/total` and how many songs are missing; the arrow lists them and **Refresh** reads the playlist again.
+When every song is in the library, the playlist is added to the Playlists tab (songs in Spotify's order, Spotify's picture as its cover) and the
+request moves to **Previous requests**. For long playlists use **Mark as done**, which does the same with the songs you have.
+
+Finished requests are kept under Request > Previous requests (songs, albums, artists, playlists).
+
 ## Artist biography, genre and radio
 
 An artist page shows a short Wikipedia biography and the artist's genres (from Wikidata). Both are saved in the database the first time
@@ -85,6 +96,8 @@ does the same check for every artist (and fills in genres).
 
 The **Radio** button on an artist page builds a queue of 30 or more songs from your library, starting with a song by that artist and mixing in
 other artists with related genres (it tops up from the rest of the library when too few match). It is a temporary queue, shown under Up next.
+On an artist page: tabs for **Biography**, **Lineup** (bands only, current members from the Wikipedia infobox) and **Similar artists**
+(Deezer; up to 9 shown plus a "show more" circle that opens the full list).
 Radio needs genres, so run **Update artist bio** once after deploying to fill them in for the artists you already have.
 
 ## Admin extras

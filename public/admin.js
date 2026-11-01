@@ -127,17 +127,48 @@ $("#plImg").addEventListener("change", async (e) => {
 });
 
 // ---------- requests ----------
+const openReq = new Set();
 async function loadRequests() {
   let list = [];
-  try { list = await (await fetch("/api/requests")).json(); } catch {}
-  $("#reqRows").innerHTML = list.length ? `<table><tbody>${list.map((r) => `<tr data-r="${r.id}">
+  try { list = await (await fetch("/api/admin/requests")).json(); } catch {}
+  if (!Array.isArray(list)) list = [];
+  window.__reqs = list;
+  $("#reqRows").innerHTML = list.length ? `<table><tbody>${list.map((r) => {
+    const pl = r.kind === "playlist", has = pl && r.total != null;
+    const miss = has ? r.missing.length : 0;
+    const progress = has ? `${r.matched}/${r.total}${r.partial ? "+" : ""} · ${miss} missing song${miss === 1 ? "" : "s"}` : pl ? "Song list not available" : "";
+    const open = openReq.has(r.id);
+    return `<tr data-r="${r.id}">
     <td style="width:56px">${mini(r.image, r.title)}</td>
-    <td>${esc(r.title)}<br><span class="muted">${KIND[r.kind]}${r.artist ? " · " + esc(r.artist) : ""}${r.url ? ` · <a href="${esc(r.url)}" target="_blank" rel="noopener">Open on Spotify</a>` : ""}</span></td>
-    <td style="text-align:right"><button class="btn ghost" ${small}>Remove</button></td></tr>`).join("")}</tbody></table>` : "The queue is empty.";
+    <td>${esc(r.title)}<br><span class="muted">${KIND[r.kind]}${r.artist ? " · " + esc(r.artist) : ""}${r.url ? ` · <a href="${esc(r.url)}" target="_blank" rel="noopener">Open on Spotify</a>` : ""}</span>${progress ? `<br><span class="muted">${esc(progress)}</span>` : ""}</td>
+    <td style="text-align:right;white-space:nowrap">${has ? `<button class="btn ghost" data-a="toggle" aria-expanded="${open}" aria-label="Show missing songs" ${small}>${open ? "▴" : "▾"}</button> ` : ""}${pl ? `<button class="btn ghost" data-a="refresh" ${small}>Refresh</button> ` : ""}<button class="btn ghost" data-a="remove" ${small}>Remove</button></td></tr>
+    ${has ? `<tr class="reqdetail${open ? "" : " hidden"}" data-d="${r.id}"><td></td><td colspan="2">
+      ${miss ? `<ul class="missing">${r.missing.map((x) => `<li>${esc(x.t)}${x.a ? ` <span class="muted">· ${esc(x.a)}</span>` : ""}</li>`).join("")}</ul>` : `<p class="muted" style="margin:8px 0">Every song we can see is already in the library.</p>`}
+      ${r.partial ? `<p class="muted" style="margin:4px 0;font-size:13px">Spotify only shows the first ${r.total} songs of this playlist, so the rest can't be checked.</p>` : ""}
+      <button class="btn ghost" data-a="done" ${small}>Mark as done</button></td></tr>` : ""}`;
+  }).join("")}</tbody></table>` : "The queue is empty.";
 }
 $("#reqRows").addEventListener("click", async (e) => {
   const b = e.target.closest("button"); if (!b) return;
-  await fetch("/api/admin/requests/" + b.closest("tr").dataset.r, { method: "DELETE" }); loadRequests();
+  const tr = b.closest("tr"), id = tr.dataset.r || tr.dataset.d, act = b.dataset.a;
+  const r = (window.__reqs || []).find((x) => x.id === id) || {};
+  if (act === "toggle") {
+    const d = $(`tr[data-d="${id}"]`), show = d.classList.contains("hidden");
+    d.classList.toggle("hidden", !show); show ? openReq.add(id) : openReq.delete(id);
+    b.setAttribute("aria-expanded", show); b.textContent = show ? "▴" : "▾"; return;
+  }
+  if (act === "refresh" || act === "done") {
+    if (act === "done" && !confirm(`Add "${r.title}" to the Playlists tab with the ${r.matched || 0} songs we have, and move it to Previous requests?`)) return;
+    b.disabled = true; const label = b.textContent; b.textContent = act === "done" ? "Working…" : "Refreshing…";
+    const res = await fetch(`/api/admin/requests/${id}/${act === "done" ? "complete" : "refresh"}`, { method: "POST" });
+    const j = await res.json().catch(() => ({}));
+    b.disabled = false; b.textContent = label;
+    if (!res.ok) { flashMsg("#reqMsg", j.error || "Couldn't refresh.", true); return; }
+    if (j.status === "done") { openReq.delete(id); flashMsg("#reqMsg", `"${r.title}" is complete: it is now in the Playlists tab and moved to Previous requests.`); loadPlaylists(); }
+    else flashMsg("#reqMsg", `${j.matched}/${j.total}${j.partial ? "+" : ""} songs are in the library, ${j.missing.length} missing.`);
+    loadRequests(); return;
+  }
+  await fetch("/api/admin/requests/" + id, { method: "DELETE" }); openReq.delete(id); loadRequests();
 });
 
 // ---------- add music, with an overall "10 out of 30" progress bar ----------
@@ -303,48 +334,201 @@ $("#favRm").addEventListener("click", async () => {
 });
 
 const SAMPLE_AD = `<style>
-  .deck{position:relative;height:100%;overflow:hidden;border-radius:16px}
-  .sl{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;gap:12px;padding:32px 64px;opacity:0;visibility:hidden;transition:opacity .6s;color:#fff}
-  .sl.on{opacity:1;visibility:visible}
-  .sl h2{margin:0;font-size:34px}
-  .sl p{margin:0;max-width:46ch;font-size:16px}
-  .sl a{align-self:flex-start;padding:12px 24px;border-radius:24px;background:#C8F169;color:#131211;font-weight:800;text-decoration:none}
-  .c1{background:linear-gradient(135deg,#1f6f5c,#0d2b24)}
-  .c2{background:linear-gradient(135deg,#6a3fbf,#1d1236)}
-  .c3{background:linear-gradient(135deg,#bf5a3f,#36170f)}
-  .pips{position:absolute;bottom:14px;left:0;right:0;display:flex;justify-content:center;gap:8px}
-  .pips button{width:12px;height:12px;border-radius:50%;border:0;background:rgba(255,255,255,.4);cursor:pointer;padding:0}
-  .pips button.on{background:#fff}
-  .arr{position:absolute;top:50%;transform:translateY(-50%);width:44px;height:44px;border-radius:50%;border:0;background:rgba(0,0,0,.4);color:#fff;font-size:22px;cursor:pointer}
-  .back{left:12px}.fwd{right:12px}
-  @media (prefers-reduced-motion:reduce){.sl{transition:none}}
+  .deck{position:relative;height:100%;min-height:240px;overflow:hidden;border-radius:16px;isolation:isolate}
+  .slide{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;gap:12px;padding:32px 72px;opacity:0;visibility:hidden;transition:opacity .6s,visibility .6s;color:#fff}
+  .slide.on{opacity:1;visibility:visible}
+  .kicker{margin:0;font-size:11px;letter-spacing:.18em;text-transform:uppercase;font-weight:800;color:#C8F169}
+  .slide h2{margin:0;font-size:clamp(22px,3vw,34px);line-height:1.15;letter-spacing:-.01em}
+  .slide p{margin:0;max-width:46ch;font-size:16px;color:rgba(255,255,255,.82)}
+  .slide a{align-self:flex-start;margin-top:4px;padding:12px 24px;border-radius:24px;background:#C8F169;color:#131211;font-weight:800;text-decoration:none;transition:transform .15s,filter .15s}
+  .slide a:hover{filter:brightness(1.08);transform:translateY(-1px)}
+  .slide a:focus-visible,.nav:focus-visible,.pause:focus-visible,.dots button:focus-visible{outline:2px solid #fff;outline-offset:3px}
+  .count{font-size:1.35em;font-weight:800;color:#C8F169;font-variant-numeric:tabular-nums}
+
+  .s1{background:linear-gradient(135deg,#3a1010,#120a0a 65%)}
+  .s2{background:linear-gradient(135deg,#12303a,#08131a 65%)}
+  .s3{background:linear-gradient(135deg,#4a1226,#16070d 65%)}   /* most hearted */
+  .s4{background:linear-gradient(135deg,#4a3410,#150f05 65%)}   /* most liked */
+  .s5{background:linear-gradient(135deg,#2b1b4d,#0d0819 65%)}   /* random play */
+
+  .dots{position:absolute;bottom:14px;left:0;right:0;display:flex;justify-content:center;gap:8px;z-index:2}
+  .dots button{width:12px;height:12px;border-radius:50%;border:0;background:rgba(255,255,255,.35);cursor:pointer;padding:0}
+  .dots button.on{background:#C8F169}
+  .nav,.pause{position:absolute;border:0;background:rgba(0,0,0,.45);color:#fff;cursor:pointer;z-index:2;line-height:1}
+  .nav{top:50%;transform:translateY(-50%);width:44px;height:44px;border-radius:50%;font-size:22px}
+  .prev{left:12px}.next{right:12px}
+  .pause{top:12px;right:12px;width:30px;height:30px;border-radius:50%;font-size:11px}
+  .pause[hidden]{display:none}
+  @media (max-width:560px){.slide{padding:24px 50px}.slide h2{font-size:22px}.slide p{font-size:14px}}
+  @media (prefers-reduced-motion:reduce){.slide,.slide a{transition:none}}
 </style>
-<div class="deck" id="deck">
-  <div class="sl c1 on"><h2>Your headline here</h2><p>A short line about what you want to show.</p><a href="https://example.com" target="_blank" rel="noopener">Learn more</a></div>
-  <div class="sl c2"><h2>Second slide</h2><p>Change the text, colours and links to anything you like.</p><a href="https://example.com" target="_blank" rel="noopener">Visit</a></div>
-  <div class="sl c3"><h2>Third slide</h2><p>Use target="_top" on a link to open a page inside this app.</p><a href="/#artists" target="_top">Browse artists</a></div>
-  <button class="arr back" aria-label="Previous slide">‹</button><button class="arr fwd" aria-label="Next slide">›</button>
-  <div class="pips"></div>
+
+<div class="deck" id="deck" aria-roledescription="carousel" aria-label="Requests, charts and updates">
+  <!-- 1 -->
+  <div class="slide s1 on">
+    <p class="kicker">Request line open</p>
+    <h2>You pick what plays next</h2>
+    <p>Drop a track and it goes straight into the live queue — no algorithm, no gatekeepers.</p>
+    <a href="https://music.playy.online/#request/new" target="_top" data-cta="request">Request a track</a>
+  </div>
+
+  <!-- 2 -->
+  <div class="slide s2">
+    <p class="kicker">Live right now</p>
+    <h2>See what's up next</h2>
+    <p>Every track in the queue, who asked for it, and how long until it hits the speakers.</p>
+    <a href="https://music.playy.online/#request" target="_top" data-cta="queue">See the queue</a>
+  </div>
+
+  <!-- 3 — most hearted -->
+  <div class="slide s3" data-live="hearts">
+    <p class="kicker">Most hearted this week</p>
+    <h2>What the pit is loving</h2>
+    <p><span class="count" data-fill="heart-count">The community</span> hearts and counting. See the tracks your fellow listeners can't stop hitting.</p>
+    <a href="https://music.playy.online/#hearts" target="_top" data-cta="hearts">See most hearted</a>
+  </div>
+
+  <!-- 4 — most liked -->
+  <div class="slide s4" data-live="likes">
+    <p class="kicker">Most liked this week</p>
+    <h2>The crowd favourites</h2>
+    <p>Ranked by real likes from real listeners — no editorial picks, no paid placement.</p>
+    <a href="https://music.playy.online/#likes" target="_top" data-cta="likes">See most liked</a>
+  </div>
+
+  <!-- 5 — random play -->
+  <div class="slide s5">
+    <p class="kicker">Can't decide?</p>
+    <h2>Shuffle the pit</h2>
+    <p>One tap drops a random track from the whole library into your player. No browsing, no picking.</p>
+    <a href="https://music.playy.online/#recent/songs" target="_top" data-random data-cta="random">Surprise me</a>
+  </div>
+
+  <button class="nav prev" type="button" aria-label="Previous slide">‹</button>
+  <button class="nav next" type="button" aria-label="Next slide">›</button>
+  <button class="pause" type="button" aria-label="Pause slideshow">❚❚</button>
+  <div class="dots"></div>
 </div>
+
 <script>
 (function () {
-  var s = [].slice.call(document.querySelectorAll('.sl')), d = document.querySelector('.pips'), i = 0, t;
-  s.forEach(function (_, k) { var b = document.createElement('button'); b.setAttribute('aria-label', 'Slide ' + (k + 1)); b.onclick = function () { go(k); }; d.appendChild(b); });
-  function go(n) { i = (n + s.length) % s.length; s.forEach(function (e, k) { e.classList.toggle('on', k === i); }); [].forEach.call(d.children, function (b, k) { b.classList.toggle('on', k === i); }); }
-  document.querySelector('.back').onclick = function () { go(i - 1); };
-  document.querySelector('.fwd').onclick = function () { go(i + 1); };
-  function play() { t = setInterval(function () { go(i + 1); }, 5000); } function stop() { clearInterval(t); }
-  var deck = document.getElementById('deck'); deck.onmouseenter = stop; deck.onmouseleave = play;
-  if (!matchMedia('(prefers-reduced-motion: reduce)').matches) play();
+  var deck = document.getElementById('deck');
+  var slides = [].slice.call(deck.querySelectorAll('.slide'));
+  var dots = deck.querySelector('.dots');
+  var pauseBtn = deck.querySelector('.pause');
+  var reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var DURATION = 6500;
+  var i = 0, timer = null, paused = false;
+
+  slides.forEach(function (_, k) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.setAttribute('aria-label', 'Slide ' + (k + 1) + ' of ' + slides.length);
+    b.onclick = function () { go(k); restart(); };
+    dots.appendChild(b);
+  });
+
+  function go(n) {
+    i = (n + slides.length) % slides.length;
+    slides.forEach(function (el, k) {
+      var on = k === i;
+      el.classList.toggle('on', on);
+      el.setAttribute('aria-hidden', on ? 'false' : 'true');
+    });
+    [].forEach.call(dots.children, function (b, k) {
+      b.classList.toggle('on', k === i);
+      b.setAttribute('aria-current', k === i ? 'true' : 'false');
+    });
+  }
+
+  function start() { if (paused || reduce) return; stop(); timer = setInterval(function () { go(i + 1); }, DURATION); }
+  function stop() { if (timer) { clearInterval(timer); timer = null; } }
+  function restart() { stop(); start(); }
+
+  deck.querySelector('.prev').onclick = function () { go(i - 1); restart(); };
+  deck.querySelector('.next').onclick = function () { go(i + 1); restart(); };
+
+  function setPaused(p) {
+    paused = p;
+    pauseBtn.textContent = p ? '▶' : '❚❚';
+    pauseBtn.setAttribute('aria-label', p ? 'Play slideshow' : 'Pause slideshow');
+    p ? stop() : start();
+  }
+  pauseBtn.onclick = function () { setPaused(!paused); };
+  if (reduce) pauseBtn.hidden = true;
+
+  deck.addEventListener('mouseenter', stop);
+  deck.addEventListener('mouseleave', function () { if (!paused) start(); });
+  deck.addEventListener('focusin', stop);
+  deck.addEventListener('focusout', function () { if (!paused) start(); });
+
+  var x0 = null;
+  deck.addEventListener('touchstart', function (e) { x0 = e.touches[0].clientX; }, { passive: true });
+  deck.addEventListener('touchend', function (e) {
+    if (x0 === null) return;
+    var dx = e.changedTouches[0].clientX - x0;
+    if (Math.abs(dx) > 40) { go(i + (dx < 0 ? 1 : -1)); restart(); }
+    x0 = null;
+  });
+
+  deck.addEventListener('keydown', function (e) {
+    if (e.key === 'ArrowLeft') { go(i - 1); restart(); }
+    if (e.key === 'ArrowRight') { go(i + 1); restart(); }
+  });
+
+  if ('IntersectionObserver' in window) {
+    new IntersectionObserver(function (entries) {
+      entries[0].isIntersecting ? (paused || start()) : stop();
+    }, { threshold: 0.3 }).observe(deck);
+  }
+
+  document.addEventListener('visibilitychange', function () {
+    document.hidden ? stop() : (paused || start());
+  });
+
+  /* Live data injection — see hook below */
+  if (typeof window.adStats === 'object' && window.adStats) {
+    [].forEach.call(deck.querySelectorAll('[data-fill]'), function (el) {
+      var v = window.adStats[el.getAttribute('data-fill')];
+      if (v != null) el.textContent = v;
+    });
+  }
+
+  deck.addEventListener('click', function (e) {
+    var t = e.target;
+    if (!t || !t.closest) return;
+
+    /* --- random play: ask the app to shuffle (the frame is sandboxed, so postMessage is the only way out) --- */
+    var r = t.closest('[data-random]');
+    if (r) {
+      e.preventDefault();
+      try { window.parent.postMessage({ type: 'ad:shuffle' }, '*'); } catch (_) {}
+      if (typeof window.trackAd === 'function') window.trackAd({ cta: 'random', slide: i + 1 });
+      return;
+    }
+
+    /* --- normal links --- */
+    var a = t.closest('a[data-cta]');
+    if (!a) return;
+    if (typeof window.trackAd === 'function') {
+      window.trackAd({ cta: a.getAttribute('data-cta'), slide: i + 1, href: a.getAttribute('href') });
+    }
+  });
+
   go(0);
+  start();
 })();
-</script>`;
+</script>
+`;
 $("#spSample").addEventListener("click", () => { if (!$("#spCode").value.trim() || confirm("Replace the code in the box with the sample slider?")) $("#spCode").value = SAMPLE_AD; });
 $("#spPreviewBtn").addEventListener("click", () => {
   const f = document.createElement("iframe");
   f.title = "Ad preview"; f.setAttribute("sandbox", AD_SANDBOX); f.className = "spframe";
   f.style.height = (Math.min(1000, Math.max(60, +$("#spH").value || 340))) + "px";
-  f.srcdoc = adDoc($("#spCode").value);
+  const sum = (k) => (window.__tracks || []).reduce((n, t) => n + (t[k] || 0), 0), stats = { "song-count": (window.__tracks || []).length.toLocaleString() };
+  if (sum("hearts")) stats["heart-count"] = sum("hearts").toLocaleString();
+  if (sum("likes")) stats["like-count"] = sum("likes").toLocaleString();
+  f.srcdoc = adDoc($("#spCode").value, stats);
   $("#spPrev").replaceChildren(f);
 });
 $("#spSave").addEventListener("click", () => saveSettings({ ad_enabled: $("#spOn").checked, ad_html: $("#spCode").value, ad_height: $("#spH").value }, "#spMsg"));
