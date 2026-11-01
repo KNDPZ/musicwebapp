@@ -14,7 +14,7 @@ export function relatedScore(a, b) {
 }
 const shuffle = (list) => { const a = [...list]; for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
 // genres: { "Artist name": ["ska punk", ...] }. Returns { ids, matched } where matched = songs chosen because their genre is related.
-export function radioIds(tracks, genres, name, { target = 40, min = 30 } = {}) {
+export function radioIds(tracks, genres, name, { target = 40, min = 30, seedCount = 6, first = null } = {}) {
   const mine = tracks.filter((t) => artistsOf(t).includes(name));
   const seedGenres = genres[name] || [];
   const scored = tracks.filter((t) => !artistsOf(t).includes(name))
@@ -23,7 +23,7 @@ export function radioIds(tracks, genres, name, { target = 40, min = 30 } = {}) {
   const related = scored.filter((x) => x.s > 0).map((x) => ({ t: x.t, k: -Math.log(Math.random()) / (1 + x.s) }))
     .sort((p, q) => p.k - q.k).map((x) => x.t);
   const rest = shuffle(scored.filter((x) => x.s === 0).map((x) => x.t));
-  const seed = shuffle(mine).slice(0, 6);
+  const seed = first ? [first, ...shuffle(mine.filter((t) => t.id !== first.id))].slice(0, seedCount) : shuffle(mine).slice(0, seedCount);
   let pick = related.slice(0, Math.max(0, target - seed.length));
   const matched = pick.length;
   if (pick.length + seed.length < min) pick = pick.concat(rest.slice(0, min - pick.length - seed.length)); // not enough related songs: top up from the library
