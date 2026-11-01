@@ -31,7 +31,7 @@ function applySite() {
 function adSlot() {
   const ad = site.ad;
   if (!ad || !ad.enabled || !ad.html.trim()) return "";
-  return `<div class="spslot"><iframe class="spframe" title="Featured" sandbox="${AD_SANDBOX}" referrerpolicy="no-referrer" style="height:${ad.height}px" srcdoc="${esc(adDoc(ad.html, adStats()))}"></iframe></div>`;
+  return `<div class="spslot"><iframe class="spframe" title="Featured" sandbox="${AD_SANDBOX}" referrerpolicy="no-referrer" style="height:${ad.height}px" srcdoc="${esc(adDoc(ad.html))}"></iframe></div>`;
 }
 applySite();
 
@@ -56,7 +56,7 @@ async function load() {
 const SUBS = { songs: "Songs", artists: "Artists", albums: "Albums", playlists: "Playlists" };
 const SUBMAPS = {
   recent: { items: SUBS, def: "songs" },
-  request: { items: { queue: "Active queue", previous: "Previous requests", new: "Make a request" }, def: "queue" },
+  request: { items: { queue: "Queue", new: "Make a request" }, def: "queue" },
 };
 const LIMIT = { top: 100, hearts: 50, likes: 20, dislikes: 20 };
 const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
@@ -96,17 +96,15 @@ const noView = () => { view = { ids: [], label: "", pl: null }; };
 
 function render() {
   const { a, arg } = parse();
-  const tab = a === "artist" || a === "similar" ? "artists" : a === "playlist" ? "playlists" : a === "album" ? "recent" : has(TABS, a) ? a : "recent";
+  const tab = a === "artist" ? "artists" : a === "playlist" ? "playlists" : a === "album" ? "recent" : has(TABS, a) ? a : "recent";
   const sm = SUBMAPS[tab];
-  const head = arg.split("/")[0];
-  const sub = !sm ? null : a === "album" ? "albums" : has(sm.items, head) ? head : sm.def;
+  const sub = !sm ? null : a === "album" ? "albums" : has(sm.items, arg) ? arg : sm.def;
   renderNav(tab, sub);
   const el = $("#list");
-  if (tab === "request") { if (sub === "new") requestForm(el); else if (sub === "previous") requestPrevious(el, arg.split("/")[1]); else requestQueue(el); return; }
+  if (tab === "request") { if (sub === "new") requestForm(el); else requestQueue(el); return; }
   const home = tab === "recent" && sub === "songs";
   if (!tracks.length) { el.innerHTML = (home ? adSlot() : "") + empty("No music yet. Check back soon."); noView(); return; }
   if (a === "artist") artistPage(el, dec(arg));
-  else if (a === "similar") similarPage(el, dec(arg));
   else if (a === "playlist") playlistPage(el, dec(arg));
   else if (a === "album") albumPage(el, ...arg.split("/").map(dec));
   else if (tab === "recent") {
@@ -208,75 +206,19 @@ function artistPage(el, name) {
   view = { ids, label: name, pl: null };
   const albums = names.filter((g) => g).length;
   el.innerHTML = `<a class="back" href="#artists">← All artists</a>
-    <div class="hero">${art(artistArt(name), name, "round")}<div><h1>${esc(name)}</h1><span class="muted">${plural(ts.length, "song")}${albums ? " · " + plural(albums, "album") : ""}<span id="genre"></span></span>${actions(true)}</div></div>
-    <div class="tabs" id="atabs" role="group" aria-label="About ${esc(name)}"></div><div class="apanel" id="apanel" aria-live="polite"></div>${body}`;
-  artistView = { name, tab: "bio", bio: undefined, similar: undefined };
-  paintArtist();
-  loadBio(name); loadSimilar(name);
+    <div class="hero">${art(artistArt(name), name, "round")}<div><h1>${esc(name)}</h1><span class="muted">${plural(ts.length, "song")}${albums ? " · " + plural(albums, "album") : ""}<span id="genre"></span></span><p class="bio" id="bio" aria-live="polite">Loading biography…</p>${actions(true)}</div></div>${body}`;
+  loadBio(name);
 }
-let artistView = null;
 const genreLine = (g) => g.slice(0, 3).map((x) => x.replace(/\b\p{L}/gu, (c) => c.toUpperCase())).join(", ");
 const genreCache = {};
-const libNames = () => new Map(tracks.flatMap(artistsOf).map((a) => [a.toLowerCase(), a]));
-// tabs: Biography first; Lineup only for bands; Similar artists last
-function paintArtist() {
-  const v = artistView;
-  if (!v || !$("#atabs")) return;
-  const tabs = [["bio", "Biography"], ...(v.bio && v.bio.kind === "band" ? [["lineup", "Lineup"]] : []), ["similar", "Similar artists"]];
-  if (!tabs.some(([k]) => k === v.tab)) v.tab = "bio";
-  $("#atabs").innerHTML = tabs.map(([k, label]) => `<button type="button" class="tab" data-atab="${k}" aria-pressed="${k === v.tab}">${label}</button>`).join("");
-  let html = "";
-  if (v.tab === "bio") {
-    html = v.bio === undefined ? `<p class="muted">Loading biography…</p>` : v.bio && v.bio.text
-      ? `<p class="bio">${esc(v.bio.text)} <a href="${esc(v.bio.url)}" target="_blank" rel="noopener">${esc(v.bio.source)}</a></p>` : `<p class="muted">No biography found for this artist.</p>`;
-  } else if (v.tab === "lineup") {
-    const m = (v.bio && v.bio.members) || [];
-    html = m.length ? `<ul class="members">${m.map((p) => `<li>${p.url ? `<a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.name)}</a>` : esc(p.name)}${p.role ? ` <span class="muted">${esc(p.role)}</span>` : ""}</li>`).join("")}</ul><p class="muted" style="font-size:13px">Current members, from Wikipedia.</p>`
-      : `<p class="muted">No lineup information found.</p>`;
-  } else {
-    const list = v.similar;
-    if (list === undefined) html = `<p class="muted">Loading similar artists…</p>`;
-    else if (!list.length) html = `<p class="muted">No similar artists found.</p>`;
-    else {
-      const more = list.length > 10, shown = more ? list.slice(0, 9) : list;
-      html = `<div class="sim">${shown.map((s) => simTile(s)).join("")}${more ? `<a class="simtile" href="#similar/${enc(v.name)}"><span class="art round dots" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg></span><b>Show more</b><span class="muted">${list.length - 9} more</span></a>` : ""}</div>`;
-    }
-  }
-  $("#apanel").innerHTML = html;
-}
-function simTile(s, big) {
-  const own = libNames().get(s.name.toLowerCase());
-  const image = own ? artistArt(own) : s.image || "";
-  const inner = `${art(image, s.name, "round")}<b>${esc(s.name)}</b><span class="muted">${own ? "In your library" : "Not in the library"}</span>`;
-  return own ? `<a class="${big ? "tile" : "simtile"}" href="#artist/${enc(own)}">${inner}</a>` : `<button type="button" class="${big ? "tile" : "simtile"}" data-req="${esc(s.name)}" title="Request this artist">${inner}</button>`;
-}
 async function loadBio(name) {
   let b = null;
   try { const r = await fetch("/api/bio?name=" + enc(name)); if (r.ok) b = await r.json(); } catch {}
-  const cur = parse();
-  if (!artistView || artistView.name !== name || cur.a !== "artist" || dec(cur.arg) !== name) return; // the page changed while we waited
-  artistView.bio = b;
-  if (b && b.genres && b.genres.length) { genreCache[name] = b.genres; const g = $("#genre"); if (g) g.textContent = " · " + genreLine(b.genres); }
-  paintArtist();
-}
-async function loadSimilar(name) {
-  let list = [];
-  try { const r = await fetch("/api/similar?name=" + enc(name)); if (r.ok) list = (await r.json()).artists || []; } catch {}
-  if (!artistView || artistView.name !== name) return;
-  artistView.similar = list;
-  paintArtist();
-}
-// the page with every similar artist
-async function similarPage(el, name) {
-  noView();
-  const back = `<a class="back" href="#artist/${enc(name)}">← Back to artist</a>`;
-  el.innerHTML = `${back}<h1 style="margin:0 0 4px">Similar to ${esc(name)}</h1><p class="muted">Loading…</p>`;
-  let list = [];
-  try { const r = await fetch("/api/similar?name=" + enc(name)); if (r.ok) list = (await r.json()).artists || []; } catch {}
-  const cur = parse();
-  if (cur.a !== "similar" || dec(cur.arg) !== name) return;
-  el.innerHTML = `${back}<h1 style="margin:0 0 4px">Similar to ${esc(name)}</h1><p class="muted" style="margin-top:0">${plural(list.length, "artist")}. Artists that are not in the library can be requested.</p>`
-    + (list.length ? `<div class="grid">${list.map((s) => simTile(s, true)).join("")}</div>` : empty("No similar artists found."));
+  const el = $("#bio"), cur = parse();
+  if (!el || cur.a !== "artist" || dec(cur.arg) !== name) return; // the page changed while we waited
+  el.textContent = "";
+  if (b && b.genres && b.genres.length) { genreCache[name] = b.genres; $("#genre").textContent = " · " + genreLine(b.genres); }
+  if (b && b.text) el.innerHTML = `${esc(b.text)} <a href="${esc(b.url)}" target="_blank" rel="noopener">${esc(b.source)}</a>`;
 }
 
 // Radio: 30+ songs from the same genre (from your library), starting with a song by this artist
@@ -289,30 +231,6 @@ async function startRadio(name) {
   startQueue(ids, ids[0], `Radio · ${name}`, null, "radio");
   if (!matched) popup("Radio is mixing your whole library", `We don't have genre information for ${name} yet, or nothing else in the library matches it, so this radio mixes songs from everywhere.`);
 }
-// "Surprise me" on the front-page slider: a random song and 9 more that follow its genre
-async function surpriseMe() {
-  if (!tracks.length) return;
-  let genres = {};
-  try { genres = await (await fetch("/api/genres")).json(); } catch {}
-  genres = { ...genres, ...genreCache };
-  const known = (t) => artistsOf(t).some((a) => (genres[a] || []).length);
-  const withGenre = tracks.filter(known), pool = withGenre.length ? withGenre : tracks;
-  const first = pool[Math.floor(Math.random() * pool.length)];
-  const seed = artistsOf(first).find((a) => (genres[a] || []).length) || primaryArtist(first);
-  const { ids } = radioIds(tracks, genres, seed, { target: 10, min: 10, seedCount: 1, first });
-  startQueue(ids, ids[0], `Surprise mix · ${genreLine(genres[seed] || []) || "random songs"}`, null, "radio");
-}
-const adStats = () => {
-  const sum = (k) => tracks.reduce((n, t) => n + (t[k] || 0), 0), out = {};
-  if (sum("hearts")) out["heart-count"] = sum("hearts").toLocaleString();
-  if (sum("likes")) out["like-count"] = sum("likes").toLocaleString();
-  out["song-count"] = tracks.length.toLocaleString();
-  return out;
-};
-window.addEventListener("message", (e) => { // the slider (a sandboxed frame) asks the app to play something
-  const f = document.querySelector(".spframe");
-  if (f && e.source === f.contentWindow && e.data && e.data.type === "ad:shuffle") surpriseMe();
-});
 
 // Playlist cover: your own image, else 9 different album covers (9+ albums) or a 4-cover grid.
 function mosaic(p) {
@@ -349,9 +267,8 @@ function playlistPage(el, id) {
 
 // ---------- requests ----------
 const KIND = { song: "Song", artist: "Artist", album: "Album", playlist: "Playlist" };
-let prefill = "", flash = "", reqKind = "song", picked = null, sugg = [], active = -1, seq = 0, timer = 0;
+let flash = "", reqKind = "song", picked = null, sugg = [], active = -1, seq = 0, timer = 0;
 
-function prefillRequest(name) { reqKind = "artist"; prefill = name; location.hash = "#request/new"; }
 function popup(title, text) { $("#msgT").textContent = title; $("#msgP").textContent = text; $("#msgDlg").showModal(); $("#msgOk").focus(); }
 
 async function requestQueue(el) {
@@ -360,42 +277,12 @@ async function requestQueue(el) {
   let list = [];
   try { list = await (await fetch("/api/requests")).json(); } catch {}
   const cur = parse();
-  if (cur.a !== "request" || cur.arg.split("/")[0] !== "") return;
+  if (cur.a !== "request" || cur.arg === "new") return;
   const note = flash ? `<p class="msg" role="status">${esc(flash)}</p>` : ""; flash = "";
-  const sub = (r) => r.kind === "song" ? [r.artist, r.album].filter(Boolean).join(" · ") : r.kind === "album" ? r.artist
-    : r.kind === "playlist" ? (r.total ? `Spotify playlist · ${r.total}${r.partial ? "+" : ""} songs${r.matched != null ? ` · ${r.matched} already here` : ""}` : "Spotify playlist") : "";
+  const sub = (r) => r.kind === "song" ? [r.artist, r.album].filter(Boolean).join(" · ") : r.kind === "album" ? r.artist : r.kind === "playlist" ? "Spotify playlist" : "";
   el.innerHTML = note + (list.length ? list.map((r, i) =>
     `<div class="qline"><span class="n muted">${i + 1}</span>${art(r.image, r.title, "lg")}<span class="t">${esc(r.title)}<small>${esc(sub(r))}</small></span><span class="chip">${KIND[r.kind]}</span></div>`).join("")
     : empty(`The queue is empty. <a href="#request/new">Request something</a>.`));
-}
-
-// Previous requests: what has been added already, by kind
-async function requestPrevious(el, third) {
-  noView();
-  const kinds = { songs: "song", albums: "album", artists: "artist", playlists: "playlist" }, names = { songs: "Songs", albums: "Albums", artists: "Artists", playlists: "Playlists" };
-  const key = has(kinds, third) ? third : "songs";
-  const pills = Object.entries(names).map(([k, v]) => `<a class="tab" href="#request/previous${k === "songs" ? "" : "/" + k}"${k === key ? ' aria-current="page"' : ""}>${v}</a>`).join("");
-  el.innerHTML = `<div class="tabs" role="group" aria-label="Previous requests by kind" style="margin-bottom:16px">${pills}</div><p class="muted">Loading…</p>`;
-  let list = [];
-  try { list = await (await fetch("/api/requests/history")).json(); } catch {}
-  const cur = parse();
-  if (cur.a !== "request" || cur.arg.split("/")[0] !== "previous") return;
-  const rows = list.filter((r) => r.kind === kinds[key]);
-  const lower = (s) => String(s).toLowerCase();
-  const link = (r) => {
-    if (r.kind === "playlist") return playlists.some((p) => p.id === r.playlist_id) ? `#playlist/${enc(r.playlist_id)}` : "";
-    if (r.kind === "artist") { const n = tracks.flatMap(artistsOf).find((a) => lower(a) === lower(r.title)); return n ? `#artist/${enc(n)}` : ""; }
-    if (r.kind === "album") { const t = tracks.find((x) => lower(albumName(x)) === lower(r.title)); return t ? `#album/${enc(primaryArtist(t))}/${enc(albumName(t))}` : ""; }
-    return "";
-  };
-  const sub = (r) => r.kind === "song" ? [r.artist, r.album].filter(Boolean).join(" · ") : r.kind === "album" ? r.artist : "";
-  const body = rows.length ? rows.map((r, i) => {
-    const when = new Date(r.done_at).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
-    const inner = `<span class="n muted">${i + 1}</span>${art(r.image, r.title, "lg")}<span class="t">${esc(r.title)}<small>${esc(sub(r))}</small></span><span class="chip">Added ${esc(when)}</span>`;
-    const href = link(r);
-    return href ? `<a class="qline" href="${href}" style="color:inherit;text-decoration:none">${inner}</a>` : `<div class="qline">${inner}</div>`;
-  }).join("") : empty(`No ${names[key].toLowerCase()} have been added from requests yet.`);
-  el.innerHTML = `<div class="tabs" role="group" aria-label="Previous requests by kind" style="margin-bottom:16px">${pills}</div>${body}`;
 }
 
 function requestForm(el) {
@@ -414,7 +301,6 @@ function requestForm(el) {
     <button class="btn" id="rqGo" type="submit" disabled>Add to queue</button>
   </form>`;
   picked = null; sugg = []; active = -1;
-  if (prefill) { $("#rq").value = prefill; prefill = ""; onType(); }
 }
 function onType() {
   const v = $("#rq").value.trim();
@@ -583,10 +469,6 @@ $("#bd").addEventListener("click", () => react("dislike"));
 
 // ---------- controls ----------
 $("#list").addEventListener("click", (e) => {
-  const at = e.target.closest("[data-atab]");
-  if (at && artistView) { artistView.tab = at.dataset.atab; paintArtist(); return; }
-  const rq = e.target.closest("[data-req]");
-  if (rq) { prefillRequest(rq.dataset.req); return; }
   const k = e.target.closest("[data-kind]");
   if (k) { reqKind = k.dataset.kind; requestForm($("#list")); return; }
   const b = e.target.closest("[data-act]");
@@ -665,7 +547,6 @@ async function loadLyrics() {
   if (lyr.id !== (cur() || {}).id) return; // the song changed while we were waiting
   if (d === undefined) { body.innerHTML = empty("Lyrics are unavailable right now."); return; }
   if (!d || (!d.synced && !d.plain)) { body.innerHTML = empty(d && d.instrumental ? "This song is instrumental." : "No lyrics found for this song."); return; }
-  $("#lyt").textContent = `${t.title}${d.source ? " · " + d.source : ""}`;
   if (d.synced) {
     lyr.synced = d.synced;
     body.innerHTML = d.synced.map(([s, l]) => `<button class="ly" data-t="${s}">${l ? esc(l) : "♪"}</button>`).join("");
