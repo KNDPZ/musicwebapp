@@ -192,10 +192,13 @@ async function deezerImage(kind, artist, album, title) {
   });
   const data = await res.json();
   if (!res.ok || data.error) throw new Error("deezer unavailable"); // rate limit etc: don't cache a miss
+  if (kind === "artist") {
+    const hit = pickDeezerArtist(data.data, artist);
+    return hit && hit.picture_big && !hit.picture_big.includes("/artist//") ? hit.picture_big : null;
+  }
   for (const r of data.data || []) {
-    if (kind === "album" && norm(r.artist?.name) === norm(artist) && similar(r.title, album) && r.cover_big) return r.cover_big;
-    if (kind === "track" && norm(r.artist?.name) === norm(artist) && similar(r.title, title) && r.album?.cover_big) return r.album.cover_big;
-    if (kind === "artist" && norm(r.name) === norm(artist) && r.picture_big && !r.picture_big.includes("/artist//")) return r.picture_big;
+    if (kind === "album" && normArtist(r.artist?.name) === normArtist(artist) && similar(r.title, album) && r.cover_big) return r.cover_big;
+    if (kind === "track" && normArtist(r.artist?.name) === normArtist(artist) && similar(r.title, title) && r.album?.cover_big) return r.album.cover_big;
   }
   return null;
 }
@@ -256,9 +259,26 @@ async function serveArt(env, url) {
 // ---------- requests, suggestions, biographies ----------
 let DZ = "https://api.deezer.com", WIKI = "https://en.wikipedia.org", WIKIDATA = "https://www.wikidata.org", SPOTIFY = "https://open.spotify.com", OVH = "https://api.lyrics.ovh"; // overridable with env vars for testing
 const fold = (s) => String(s ?? "").normalize("NFKD").replace(/\p{M}/gu, "");
+// Cyrillic letters bands use as Latin lookalikes (Deezer lists the real Korn as "KoЯn").
+const CYR_LOOKALIKE = {
+  а: "a", А: "a", е: "e", Е: "e", о: "o", О: "o", р: "p", Р: "p", с: "c", С: "c",
+  у: "y", У: "y", х: "x", Х: "x", і: "i", І: "i", ї: "i", Ї: "i", ј: "j", ѕ: "s",
+  я: "r", Я: "r", в: "b", В: "b", н: "h", Н: "h", к: "k", К: "k", м: "m", М: "m", т: "t", Т: "t",
+};
+const foldLookalike = (s) => fold(s).replace(/[аАеЕоОрРсСуУхХіІїЇјѕяЯвВнНкКмМтТ]/g, (c) => CYR_LOOKALIKE[c] || c);
+const normArtist = (s) => norm(foldLookalike(s));
 const core = (s) => norm(fold(String(s ?? "").replace(/[(\[][^)\]]*[)\]]/g, " ").replace(/\s+-\s+.*$/, "")));
 const same = (a, b) => { a = core(a); b = core(b); return !!a && a === b; };
 const sameName = (a, b) => { a = core(a); b = core(b); return !!a && !!b && (a === b || a.startsWith(b + " ") || b.startsWith(a + " ")); };
+// Prefer the Deezer artist whose name matches (incl. lookalikes) and who has the most fans — avoids tiny namesakes.
+function pickDeezerArtist(list, name) {
+  const want = normArtist(name);
+  if (!want) return null;
+  const hits = (list || []).filter((r) => r && normArtist(r.name) === want);
+  if (!hits.length) return null;
+  hits.sort((a, b) => (b.nb_fan || 0) - (a.nb_fan || 0));
+  return hits[0];
+}
 const IMG_OK = /^https:\/\/([\w-]+\.)*(dzcdn\.net|scdn\.co|spotifycdn\.com|wikimedia\.org)\//;
 const safeImage = (u) => (typeof u === "string" && IMG_OK.test(u) && !u.includes("/artist//") ? u : null);
 const UA = { "user-agent": "music-app/1.0 (personal music site on Cloudflare Workers)", accept: "application/json" };
@@ -508,10 +528,10 @@ async function wikiLookup(name) {
   return null;
 }
 async function deezerPicture(name) {
-  const r = await fetch(`${DZ}/search/artist?limit=5&q=${encodeURIComponent(name)}`, { headers: UA, cf: { cacheTtl: 600, cacheEverything: true } });
+  const r = await fetch(`${DZ}/search/artist?limit=10&q=${encodeURIComponent(name)}`, { headers: UA, cf: { cacheTtl: 600, cacheEverything: true } });
   const d = await r.json();
   if (!r.ok || d.error) throw new Error("deezer unavailable");
-  const hit = (d.data || []).find((x) => norm(x.name) === norm(name));
+  const hit = pickDeezerArtist(d.data, name);
   return hit ? safeImage(hit.picture_medium) : null;
 }
 // image: a URL, null = looked and found nothing, missing = not looked yet (e.g. a service was down)
@@ -585,15 +605,16 @@ async function serveBio(env, url, ctx) {
 
 // ---------- similar artists ----------
 async function deezerRelated(name) {
-  const find = await fetch(`${DZ}/search/artist?limit=5&q=${encodeURIComponent(name)}`, { headers: UA, cf: { cacheTtl: 600, cacheEverything: true } });
+  const find = await fetch(`${DZ}/search/artist?limit=10&q=${encodeURIComponent(name)}`, { headers: UA, cf: { cacheTtl: 600, cacheEverything: true } });
   const fd = await find.json();
   if (!find.ok || fd.error) throw new Error("deezer unavailable");
-  const hit = (fd.data || []).find((r) => norm(r.name) === norm(name));
+  const hit = pickDeezerArtist(fd.data, name);
   if (!hit) return [];
   const rel = await fetch(`${DZ}/artist/${hit.id}/related?limit=30`, { headers: UA, cf: { cacheTtl: 600, cacheEverything: true } });
   const rd = await rel.json();
   if (!rel.ok || rd.error) throw new Error("deezer unavailable");
-  return (rd.data || []).map((x) => ({ name: clean(x.name), image: safeImage(x.picture_medium) })).filter((x) => x.name && norm(x.name) !== norm(name)).slice(0, 30);
+  const self = normArtist(name);
+  return (rd.data || []).map((x) => ({ name: clean(x.name), image: safeImage(x.picture_medium) })).filter((x) => x.name && normArtist(x.name) !== self).slice(0, 30);
 }
 async function serveSimilar(env, url) {
   const name = clean(url.searchParams.get("name"));
