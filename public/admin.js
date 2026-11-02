@@ -97,24 +97,79 @@ $("#rows").addEventListener("click", async (e) => {
   }
 });
 
-// ---------- playlists ----------
+// ---------- playlists: 15 per page, search, view / add / remove songs ----------
+const PL_PAGE = 15;
+let plPage = 1, plQ = "";
+const openPl = new Set(), addOpen = new Set(), addQ = new Map();
 async function loadPlaylists() {
   const pls = await (await fetch("/api/playlists")).json().then((x) => (Array.isArray(x) ? x : [])).catch(() => []);
   window.__pls = pls;
   $("#plList").innerHTML = pls.map((p) => `<option value="${esc(p.name)}">`).join("");
-  $("#plRows").innerHTML = pls.length ? `<table><tbody>${pls.map((p) => `<tr data-pl="${p.id}">
+  renderPlaylists();
+}
+const songById = () => new Map((window.__tracks || []).map((t) => [t.id, t]));
+function foundHtml(p) {
+  const q = (addQ.get(p.id) || "").toLowerCase();
+  if (!q) return `<p class="muted" style="margin:6px 0">Type to search your library.</p>`;
+  const have = new Set(p.tracks);
+  const hits = (window.__tracks || []).filter((t) => !have.has(t.id) && `${t.title} ${artistLine(t)} ${albumName(t)}`.toLowerCase().includes(q)).slice(0, 8);
+  return hits.length ? `<ul class="missing">${hits.map((t) => `<li style="display:flex;align-items:center;justify-content:space-between;gap:10px"><span>${esc(t.title)} <span class="muted">· ${esc(artistLine(t))}</span></span><button class="btn ghost" data-a="addthis" data-id="${t.id}" ${small}>Add</button></li>`).join("")}</ul>`
+    : `<p class="muted" style="margin:6px 0">No songs in the library match that (or they are already in this playlist).</p>`;
+}
+function detailHtml(p) {
+  const by = songById(), songs = p.tracks.map((id) => by.get(id)).filter(Boolean), adding = addOpen.has(p.id);
+  return `<div class="form" style="margin:8px 0"><button class="btn ghost" data-a="addsong" aria-expanded="${adding}" ${small}>Add song</button>${adding ? `<label class="hidden" for="plAdd-${p.id}">Search the library</label><input id="plAdd-${p.id}" data-addq="${p.id}" type="search" placeholder="Search the library" value="${esc(addQ.get(p.id) || "")}" style="flex:1;min-width:200px;max-width:360px;height:40px">` : ""}</div>
+    ${adding ? `<div id="found-${p.id}">${foundHtml(p)}</div>` : ""}
+    ${songs.length ? `<ul class="missing" style="max-height:340px">${songs.map((t) => `<li style="display:flex;align-items:center;justify-content:space-between;gap:10px"><button type="button" class="linkbtn" data-a="playsong" data-id="${t.id}" title="Play">▶ ${esc(t.title)} <span class="muted">· ${esc(artistLine(t))}</span></button><button class="btn danger" data-a="rmsong" data-id="${t.id}" ${small}>Remove</button></li>`).join("")}</ul>` : `<p class="muted" style="margin:8px 0">No songs in this playlist yet.</p>`}`;
+}
+function renderPlaylists() {
+  const all = (window.__pls || []).filter((p) => !plQ || p.name.toLowerCase().includes(plQ));
+  const pages = Math.max(1, Math.ceil(all.length / PL_PAGE));
+  plPage = Math.min(Math.max(1, plPage), pages);
+  const list = all.slice((plPage - 1) * PL_PAGE, plPage * PL_PAGE);
+  $("#plRows").innerHTML = list.length ? `<table><tbody>${list.map((p) => {
+    const open = openPl.has(p.id);
+    return `<tr data-pl="${p.id}">
     <td style="width:56px">${mini(p.cover_v ? `/art/playlist?id=${p.id}&v=${p.cover_v}` : "", p.name)}</td>
     <td>${esc(p.name)}<br><span class="muted">${p.tracks.length} songs · ${p.cover_v ? "custom image" : "automatic album grid"}</span></td>
-    <td style="text-align:right;white-space:nowrap"><button class="btn ghost" data-a="img" ${small}>Change image</button>
+    <td style="text-align:right;white-space:nowrap"><button class="btn ghost" data-a="view" aria-expanded="${open}" ${small}>${open ? "Collapse" : "View"}</button>
+    <button class="btn ghost" data-a="img" ${small}>Change image</button>
     ${p.cover_v ? `<button class="btn ghost" data-a="reset" ${small}>Use automatic</button>` : ""}
-    <button class="btn danger" data-a="del" ${small}>Delete</button></td></tr>`).join("")}</tbody></table>` : "No playlists yet.";
+    <button class="btn danger" data-a="del" ${small}>Delete</button></td></tr>${open ? `<tr class="reqdetail" data-pd="${p.id}"><td></td><td colspan="2">${detailHtml(p)}</td></tr>` : ""}`;
+  }).join("")}</tbody></table>` : plQ ? "No playlists match your search." : "No playlists yet.";
+  $("#plPager").innerHTML = pages > 1 ? pagerHtml(plPage, pages) : "";
 }
+$("#plQ").addEventListener("input", (e) => { plQ = e.target.value.trim().toLowerCase(); plPage = 1; renderPlaylists(); });
+$("#plPager").addEventListener("click", (e) => { const b = e.target.closest("button[data-p]"); if (b && !b.disabled) { plPage = +b.dataset.p; renderPlaylists(); $("#plQ").scrollIntoView({ block: "center" }); } });
+$("#plRows").addEventListener("input", (e) => { // search while adding a song: only the result list is redrawn, so typing is not interrupted
+  const i = e.target.closest("[data-addq]"); if (!i) return;
+  addQ.set(i.dataset.addq, i.value.trim());
+  const p = (window.__pls || []).find((x) => x.id === i.dataset.addq), box = $(`#found-${i.dataset.addq}`);
+  if (p && box) box.innerHTML = foundHtml(p);
+});
 $("#plRows").addEventListener("click", async (e) => {
-  const b = e.target.closest("button"); if (!b) return;
-  const id = b.closest("tr").dataset.pl, name = (window.__pls.find((p) => p.id === id) || {}).name || "";
-  if (b.dataset.a === "img") { imgFor = id; $("#plImg").click(); }
-  else if (b.dataset.a === "reset") { await fetch(`/api/admin/playlists/${id}/cover`, { method: "DELETE" }); loadPlaylists(); }
-  else if (confirm(`Delete the playlist "${name}"? The songs stay in the library.`)) { await fetch("/api/admin/playlists/" + id, { method: "DELETE" }); loadPlaylists(); }
+  const b = e.target.closest("button"); if (!b || !b.dataset.a) return;
+  const tr = b.closest("tr"), id = tr.dataset.pl || tr.dataset.pd, act = b.dataset.a;
+  const p = (window.__pls || []).find((x) => x.id === id) || {};
+  if (act === "view") { openPl.has(id) ? openPl.delete(id) : openPl.add(id); renderPlaylists(); return; }
+  if (act === "addsong") { addOpen.has(id) ? addOpen.delete(id) : addOpen.add(id); renderPlaylists(); const i = $(`[data-addq="${id}"]`); if (i) i.focus(); return; }
+  if (act === "playsong") {
+    const t = songById().get(b.dataset.id), a = $("#plAudio");
+    $("#plPlayer").classList.remove("hidden"); $("#plNow").textContent = t ? `Now playing: ${t.title} · ${artistLine(t)}` : "";
+    a.src = "/audio/" + b.dataset.id; a.play().catch(() => {}); return;
+  }
+  if (act === "rmsong") {
+    const t = songById().get(b.dataset.id);
+    if (!confirm(`Remove "${t ? t.title : "this song"}" from "${p.name}"? The song stays in the library.`)) return;
+    await fetch(`/api/admin/playlists/${id}/tracks/${b.dataset.id}`, { method: "DELETE" }); await loadPlaylists(); return;
+  }
+  if (act === "addthis") {
+    await post(`/api/admin/playlists/${id}/tracks`, { track_id: b.dataset.id });
+    await loadPlaylists(); const i = $(`[data-addq="${id}"]`); if (i) i.focus(); return;
+  }
+  if (act === "img") { imgFor = id; $("#plImg").click(); }
+  else if (act === "reset") { await fetch(`/api/admin/playlists/${id}/cover`, { method: "DELETE" }); loadPlaylists(); }
+  else if (act === "del" && confirm(`Delete the playlist "${p.name}"? The songs stay in the library.`)) { await fetch("/api/admin/playlists/" + id, { method: "DELETE" }); openPl.delete(id); loadPlaylists(); }
 });
 $("#plImg").addEventListener("change", async (e) => {
   const f = e.target.files[0]; e.target.value = "";

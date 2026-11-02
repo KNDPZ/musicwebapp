@@ -77,6 +77,16 @@ Song, album and artist requests leave the queue automatically when a matching so
 request leaves when you create a playlist with the same name (or remove it in Admin > Request queue).
 Limits: 10 requests per visitor and 20 per network per day, 500 waiting in total.
 
+## Playlists, lyrics and reactions
+
+- Playlists tab: hover a playlist's picture to get a round play button in its lower-right ninth; clicking the picture opens the playlist.
+- Lyrics button: 1st click opens the side panel, 2nd makes the lyrics full screen (above the page, below the player), 3rd closes them.
+  Up next can open on the right beside full-screen lyrics. Esc steps back one level.
+- Heart / like / dislike circles on artist and playlist pages (next to Radio / Shuffle). Most hearted, liked and disliked each have
+  Songs, Artists and Playlists sub tabs.
+- Lineup shows circular pictures of the members (Wikipedia photo, else Deezer when the name matches an artist there).
+- Admin > Playlists: search, 15 per page; **View** shows a playlist's songs (click to play, **Remove**, **Add song** with a library search).
+
 ## Spotify playlist requests
 
 Spotify's official API no longer lets apps read other people's playlists, so the name, picture and song list (roughly the first 50-100 songs)

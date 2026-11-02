@@ -50,7 +50,8 @@ async function getJson(url) { // { data } or { fail: "what went wrong" }
   } catch (e) { return { fail: `${url}: ${(e && e.message) || "no connection"}` }; }
 }
 async function load() {
-  const [t, p, s] = await Promise.all([getJson("/api/tracks"), getJson("/api/playlists"), getJson("/api/site")]);
+  const [t, p, s, en] = await Promise.all([getJson("/api/tracks"), getJson("/api/playlists"), getJson("/api/site"), getJson("/api/entity-reactions")]);
+  entity = { artist: (en.data && en.data.artist) || {}, playlist: (en.data && en.data.playlist) || {} };
   tracks = arr(t.data); playlists = arr(p.data);
   loadError = t.fail || p.fail || (t.data && !Array.isArray(t.data) ? "/api/tracks returned something unexpected" : "");
   if (s.data && typeof s.data.name === "string") { site = { ...s.data, ad: s.data.ad || { enabled: false, html: "", height: 340 } }; store.set("site", { name: site.name, title: site.title, favicon: site.favicon }); applySite(); }
@@ -63,9 +64,13 @@ const errorBox = (text, detail) => `<div class="empty"><p>${esc(text)}</p>${deta
 const SUBS = { songs: "Songs", artists: "Artists", albums: "Albums", playlists: "Playlists" };
 const SUBMAPS = {
   recent: { items: SUBS, def: "songs" },
+  hearts: { items: { songs: "Songs", artists: "Artists", playlists: "Playlists" }, def: "songs" },
+  likes: { items: { songs: "Songs", artists: "Artists", playlists: "Playlists" }, def: "songs" },
+  dislikes: { items: { songs: "Songs", artists: "Artists", playlists: "Playlists" }, def: "songs" },
   request: { items: { queue: "Active queue", previous: "Previous requests", new: "Make a request" }, def: "queue" },
 };
 const LIMIT = { top: 100, hearts: 50, likes: 20, dislikes: 20 };
+const RX = ["hearts", "likes", "dislikes"];
 const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 const dec = (s) => { try { return decodeURIComponent(s); } catch { return s; } };
 const enc = encodeURIComponent;
@@ -98,7 +103,29 @@ function row(t, num, extra = "", cover = false) {
 const songTiles = (l, extra) => `<div class="grid s">${l.map((t) =>
   `<button class="tile sq song" data-id="${t.id}">${art(albumArt(t), albumName(t) || t.title)}<b>${esc(t.title)}</b><span class="muted">${esc(artistLine(t))}</span>${extra ? `<span class="muted">${esc(extra(t))}</span>` : ""}</button>`).join("")}</div>`;
 const empty = (msg) => `<div class="empty">${msg}</div>`;
-const actions = (radio) => `<div class="form" style="margin:12px 0"><button class="btn" data-act="play">Play</button><button class="btn ghost" data-act="shuf">Shuffle</button>${radio ? `<button class="btn ghost" data-act="radio" title="Songs from the same genre, to discover more music"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-radio"/></svg>Radio</button>` : ""}</div>`;
+let entity = { artist: {}, playlist: {} };
+const ecount = (type, key) => (entity[type] && has(entity[type], key) ? entity[type][key] : { hearts: 0, likes: 0, dislikes: 0 });
+function reactCircles(type, key) {
+  const c = ecount(type, key), m = mine[type[0] + ":" + key] || {};
+  const one = ([k, icon, label, cnt]) => `<span class="rc"><button type="button" class="circ tip${m[k] ? " on" : ""}" data-ent="${type}" data-key="${esc(key)}" data-r="${k}" data-tip="${m[k] ? "Remove " + label.toLowerCase() : label}" aria-label="${label}" aria-pressed="${!!m[k]}"><svg><use href="#${icon}"/></svg></button><small>${c[cnt] || 0}</small></span>`;
+  return `<span class="rcircles" role="group" aria-label="Rate this ${type}" data-type="${type}" data-key="${esc(key)}">${[["heart", "i-heart", "Heart", "hearts"], ["like", "i-up", "Like", "likes"], ["dislike", "i-down", "Dislike", "dislikes"]].map(one).join("")}</span>`;
+}
+async function reactEntity(type, key, kind) {
+  const mk = type[0] + ":" + key, m = (mine[mk] ??= {}), on = !m[kind];
+  if (!has(entity[type], key)) entity[type][key] = { hearts: 0, likes: 0, dislikes: 0 };
+  const c = entity[type][key], f = { heart: "hearts", like: "likes", dislike: "dislikes" };
+  m[kind] = on; c[f[kind]] = Math.max(0, c[f[kind]] + (on ? 1 : -1));
+  const other = kind === "like" ? "dislike" : kind === "dislike" ? "like" : null;
+  if (on && other && m[other]) { m[other] = false; c[f[other]] = Math.max(0, c[f[other]] - 1); }
+  store.set("mine", mine);
+  const repaint = () => { const el = [...document.querySelectorAll("#list .rcircles")].find((x) => x.dataset.type === type && x.dataset.key === key); if (el) { el.outerHTML = reactCircles(type, key); const b = [...document.querySelectorAll("#list [data-ent]")].find((x) => x.dataset.ent === type && x.dataset.key === key && x.dataset.r === kind); if (b) b.focus(); } };
+  repaint();
+  try {
+    const r = await fetch("/api/react-entity", { method: "POST", headers: { "content-type": "application/json", "X-Visitor": vid }, body: JSON.stringify({ type, key, kind, on }) });
+    if (r.ok) { Object.assign(c, await r.json()); repaint(); }
+  } catch {}
+}
+const actions = (radio, ent) => `<div class="form" style="margin:12px 0"><button class="btn" data-act="play">Play</button><button class="btn ghost" data-act="shuf">Shuffle</button>${radio ? `<button class="btn ghost" data-act="radio" title="Songs from the same genre, to discover more music"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-radio"/></svg>Radio</button>` : ""}${ent ? reactCircles(ent.type, ent.key) : ""}</div>`;
 const noView = () => { view = { ids: [], label: "", pl: null }; };
 
 function render() {
@@ -128,6 +155,8 @@ function renderPage() {
   }
   else if (tab === "artists") artistGrid(el, false);
   else if (tab === "playlists") playlistGrid(el, false);
+  else if (RX.includes(tab) && sub === "artists") reactedArtists(el, tab);
+  else if (RX.includes(tab) && sub === "playlists") reactedPlaylists(el, tab);
   else listView(el, tab);
   markRows();
 }
@@ -219,7 +248,7 @@ function artistPage(el, name) {
   view = { ids, label: name, pl: null };
   const albums = names.filter((g) => g).length;
   el.innerHTML = `<a class="back" href="#artists">← All artists</a>
-    <div class="hero">${art(artistArt(name), name, "round")}<div><h1>${esc(name)}</h1><span class="muted">${plural(ts.length, "song")}${albums ? " · " + plural(albums, "album") : ""}<span id="genre"></span></span>${actions(true)}</div></div>
+    <div class="hero">${art(artistArt(name), name, "round")}<div><h1>${esc(name)}</h1><span class="muted">${plural(ts.length, "song")}${albums ? " · " + plural(albums, "album") : ""}<span id="genre"></span></span>${actions(true, { type: "artist", key: name })}</div></div>
     <div class="tabs" id="atabs" role="group" aria-label="About ${esc(name)}"></div><div class="apanel" id="apanel" aria-live="polite"></div>${body}`;
   artistView = { name, tab: "bio", bio: undefined, similar: undefined };
   paintArtist();
@@ -242,8 +271,8 @@ function paintArtist() {
       ? `<p class="bio">${esc(v.bio.text)} <a href="${esc(v.bio.url)}" target="_blank" rel="noopener">${esc(v.bio.source)}</a></p>` : `<p class="muted">No biography found for this artist.</p>`;
   } else if (v.tab === "lineup") {
     const m = (v.bio && v.bio.members) || [];
-    html = m.length ? `<ul class="members">${m.map((p) => `<li>${p.url ? `<a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.name)}</a>` : esc(p.name)}${p.role ? ` <span class="muted">${esc(p.role)}</span>` : ""}</li>`).join("")}</ul><p class="muted" style="font-size:13px">Current members, from Wikipedia.</p>`
-      : `<p class="muted">No lineup information found.</p>`;
+    if (m.some((p) => !("image" in p)) && !v.lineupAsked) { v.lineupAsked = true; loadLineup(v.name); }
+    html = m.length ? `<div class="sim">${m.map(memberTile).join("")}</div><p class="muted" style="font-size:13px">Current members, from Wikipedia. Pictures from Wikipedia or Deezer when available.</p>` : `<p class="muted">No lineup information found.</p>`;
   } else {
     const list = v.similar;
     if (list === undefined) html = `<p class="muted">Loading similar artists…</p>`;
@@ -254,6 +283,17 @@ function paintArtist() {
     }
   }
   $("#apanel").innerHTML = html;
+}
+const memberTile = (p) => {
+  const inner = `${art(p.image || "", p.name, "round")}<b>${esc(p.name)}</b>${p.role ? `<span class="muted">${esc(p.role)}</span>` : ""}`;
+  return p.url ? `<a class="simtile" href="${esc(p.url)}" target="_blank" rel="noopener" title="Open on Wikipedia">${inner}</a>` : `<div class="simtile">${inner}</div>`;
+};
+async function loadLineup(name) {
+  let members = null;
+  try { const r = await fetch("/api/lineup?name=" + enc(name)); if (r.ok) members = arr((await r.json()).members); } catch {}
+  if (!members || !artistView || artistView.name !== name || !artistView.bio) return;
+  artistView.bio.members = members;
+  paintArtist();
 }
 function simTile(s, big) {
   const own = libNames().get(s.name.toLowerCase());
@@ -339,13 +379,36 @@ function mosaic(p) {
   return `<span class="art mosaic ${cells.length === 9 ? "m9" : "m4"}">${cells.map((u) => `<i class="c"><img loading="lazy" alt="" src="${esc(u)}"></i>`).join("")}</span>`;
 }
 
+// A playlist tile: the picture opens the playlist; the round play button (lower-right ninth of the picture, on hover) plays it.
+function playlistTile(p, subtext) {
+  const n = p.tracks.filter((i) => byId[i]).length;
+  return `<div class="tile sq pltile"><div class="covwrap"><a class="covlink" href="#playlist/${enc(p.id)}" aria-label="Open ${esc(p.name)}">${mosaic(p)}</a><span class="fabcell"><button type="button" class="fab" data-playpl="${esc(p.id)}" aria-label="Play ${esc(p.name)}"><svg class="fill" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4v16l13-8z"/></svg></button></span></div><a class="ttl" href="#playlist/${enc(p.id)}"><b>${esc(p.name)}</b><span class="muted">${esc(subtext || plural(n, "song"))}</span></a></div>`;
+}
 function playlistGrid(el, recent) {
   let l = playlists.filter((p) => !query || p.name.toLowerCase().includes(query));
   if (recent) l = [...l].sort((x, y) => (y.updated_at || y.created_at) - (x.updated_at || x.created_at));
   noView();
-  el.innerHTML = l.length ? `<div class="grid s">${l.map((p) =>
-    `<a class="tile sq" href="#playlist/${enc(p.id)}">${mosaic(p)}<b>${esc(p.name)}</b><span class="muted">${plural(p.tracks.filter((i) => byId[i]).length, "song")}</span></a>`).join("")}</div>`
-    : empty("No playlists yet.");
+  el.innerHTML = l.length ? `<div class="grid s">${l.map((p) => playlistTile(p)).join("")}</div>` : empty("No playlists yet.");
+}
+
+// Most hearted / liked / disliked: artists and playlists
+function reactedArtists(el, tab) {
+  const own = libNames();
+  const rows = Object.keys(entity.artist).map((n) => ({ n, c: entity.artist[n][tab] || 0 }))
+    .filter((x) => x.c > 0 && own.has(x.n.toLowerCase()) && (!query || x.n.toLowerCase().includes(query)))
+    .sort((x, y) => y.c - x.c || x.n.localeCompare(y.n)).slice(0, LIMIT[tab]);
+  noView();
+  el.innerHTML = rows.length ? `<p class="muted" style="margin:0 0 12px">Top ${LIMIT[tab]} ${TABS[tab].toLowerCase()} artists</p><div class="grid">${rows.map((x) =>
+    `<a class="tile" href="#artist/${enc(x.n)}">${art(artistArt(x.n), x.n)}<b>${esc(x.n)}</b><span class="muted">${plural(x.c, tab.slice(0, -1))}</span></a>`).join("")}</div>`
+    : empty("Nothing here yet. Artists show up once someone reacts to them on their page.");
+}
+function reactedPlaylists(el, tab) {
+  const rows = playlists.map((p) => ({ p, c: ecount("playlist", p.id)[tab] || 0 }))
+    .filter((x) => x.c > 0 && (!query || x.p.name.toLowerCase().includes(query)))
+    .sort((x, y) => y.c - x.c || x.p.name.localeCompare(y.p.name)).slice(0, LIMIT[tab]);
+  noView();
+  el.innerHTML = rows.length ? `<p class="muted" style="margin:0 0 12px">Top ${LIMIT[tab]} ${TABS[tab].toLowerCase()} playlists</p><div class="grid s">${rows.map((x) => playlistTile(x.p, plural(x.c, tab.slice(0, -1)))).join("")}</div>`
+    : empty("Nothing here yet. Playlists show up once someone reacts to them on their page.");
 }
 
 function playlistPage(el, id) {
@@ -354,7 +417,7 @@ function playlistPage(el, id) {
   const l = p.tracks.map((i) => byId[i]).filter(Boolean);
   view = { ids: l.map((t) => t.id), label: `Playlist “${p.name}”`, pl: p.id };
   el.innerHTML = `<a class="back" href="#playlists">← All playlists</a>
-    <div class="hero">${mosaic(p)}<div><h1>${esc(p.name)}</h1><span class="muted">${plural(l.length, "song")}</span>${actions()}</div></div>
+    <div class="hero">${mosaic(p)}<div><h1>${esc(p.name)}</h1><span class="muted">${plural(l.length, "song")}</span>${actions(false, { type: "playlist", key: p.id })}</div></div>
     ${l.map((t, i) => row(t, i + 1, "", true)).join("")}`;
 }
 
@@ -594,6 +657,10 @@ $("#bd").addEventListener("click", () => react("dislike"));
 
 // ---------- controls ----------
 $("#list").addEventListener("click", (e) => {
+  const ent = e.target.closest("[data-ent]");
+  if (ent) { reactEntity(ent.dataset.ent, ent.dataset.key, ent.dataset.r); return; }
+  const pp = e.target.closest("[data-playpl]");
+  if (pp) { const p = playlists.find((x) => x.id === pp.dataset.playpl), ids = p ? p.tracks.filter((i) => byId[i]) : []; if (ids.length) startQueue(ids, ids[0], `Playlist “${p.name}”`, p.id); return; }
   const at = e.target.closest("[data-atab]");
   if (at && artistView) { artistView.tab = at.dataset.atab; paintArtist(); return; }
   const rq = e.target.closest("[data-req]");
@@ -645,20 +712,37 @@ function paintVol() {
   setTip("#mute", audio.muted ? "Unmute" : "Mute");
 }
 
-// Up next and Lyrics share the right-hand side; opening one closes the other.
-function togglePanel(which) {
-  const sel = { up: "#upnext", ly: "#lyrics" }, btn = { up: "#qbtn", ly: "#lybtn" };
-  const opening = $(sel[which]).classList.contains("hidden");
-  for (const k of Object.keys(sel)) {
-    const open = k === which && opening;
-    $(sel[k]).classList.toggle("hidden", !open);
-    $(btn[k]).setAttribute("aria-expanded", open);
-  }
-  document.body.classList.toggle("q-open", opening);
-  if (opening && which === "ly") loadLyrics();
+// Lyrics: 1st click opens a side panel, 2nd makes it full screen (everything except the player bar), 3rd closes it.
+// Up next opens on the right; next to full-screen lyrics it simply sits beside them and the lyrics make room.
+let lyMode = "closed", upOpen = false;
+function paintPanels() {
+  $("#lyrics").classList.toggle("hidden", lyMode === "closed");
+  $("#lyrics").classList.toggle("full", lyMode === "full");
+  $("#upnext").classList.toggle("hidden", !upOpen);
+  const c = document.body.classList;
+  c.toggle("q-open", lyMode === "side" || (upOpen && lyMode !== "full"));
+  c.toggle("ly-full", lyMode === "full"); c.toggle("up-open", upOpen);
+  $("#lybtn").setAttribute("aria-expanded", lyMode !== "closed");
+  setTip("#lybtn", lyMode === "closed" ? "Lyrics" : lyMode === "side" ? "Lyrics full screen" : "Close lyrics");
+  $("#qbtn").setAttribute("aria-expanded", upOpen);
 }
-$("#qbtn").addEventListener("click", () => togglePanel("up"));
-$("#lybtn").addEventListener("click", () => togglePanel("ly"));
+$("#qbtn").addEventListener("click", () => {
+  upOpen = !upOpen;
+  if (upOpen && lyMode === "side") lyMode = "closed"; // a side panel and Up next would not fit together
+  paintPanels();
+});
+$("#lybtn").addEventListener("click", () => {
+  const was = lyMode;
+  lyMode = was === "closed" ? "side" : was === "side" ? "full" : "closed";
+  if (lyMode === "side") upOpen = false;
+  paintPanels();
+  if (was === "closed") loadLyrics(); else if (lyMode === "full") syncLyrics(true);
+});
+$("#lyx").addEventListener("click", () => { lyMode = "closed"; paintPanels(); });
+document.addEventListener("keydown", (e) => { // Esc steps back: full screen -> side panel -> closed
+  if (e.key !== "Escape" || lyMode === "closed" || document.querySelector("dialog[open]")) return;
+  lyMode = lyMode === "full" ? "side" : "closed"; paintPanels();
+});
 
 // ---------- lyrics ----------
 const lyrCache = new Map();
