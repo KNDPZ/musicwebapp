@@ -49,7 +49,6 @@ function init(env) {
       q("CREATE TABLE IF NOT EXISTS playlist_tracks (playlist_id TEXT NOT NULL, track_id TEXT NOT NULL, added_at INTEGER NOT NULL, PRIMARY KEY (playlist_id, track_id))"),
       q("CREATE TABLE IF NOT EXISTS reactions (track_id TEXT NOT NULL, voter TEXT NOT NULL, kind TEXT NOT NULL, PRIMARY KEY (track_id, voter, kind))"),
       q("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"),
-      q("CREATE TABLE IF NOT EXISTS entity_reactions (kind TEXT NOT NULL, entity TEXT NOT NULL, voter TEXT NOT NULL, reaction TEXT NOT NULL, PRIMARY KEY (kind, entity, voter, reaction))"),
       q("CREATE TABLE IF NOT EXISTS artist_similar (name TEXT PRIMARY KEY, list TEXT NOT NULL, fetched_at INTEGER NOT NULL)"),
       q("CREATE TABLE IF NOT EXISTS artist_info (name TEXT PRIMARY KEY, text TEXT, url TEXT, wtitle TEXT, rev TEXT, genres TEXT NOT NULL DEFAULT '[]', checked_at INTEGER NOT NULL)"),
       q(`CREATE TABLE IF NOT EXISTS requests (
@@ -249,7 +248,7 @@ const fold = (s) => String(s ?? "").normalize("NFKD").replace(/\p{M}/gu, "");
 const core = (s) => norm(fold(String(s ?? "").replace(/[(\[][^)\]]*[)\]]/g, " ").replace(/\s+-\s+.*$/, "")));
 const same = (a, b) => { a = core(a); b = core(b); return !!a && a === b; };
 const sameName = (a, b) => { a = core(a); b = core(b); return !!a && !!b && (a === b || a.startsWith(b + " ") || b.startsWith(a + " ")); };
-const IMG_OK = /^https:\/\/([\w-]+\.)*(dzcdn\.net|scdn\.co|spotifycdn\.com|wikimedia\.org)\//;
+const IMG_OK = /^https:\/\/([\w-]+\.)*(dzcdn\.net|scdn\.co|spotifycdn\.com)\//;
 const safeImage = (u) => (typeof u === "string" && IMG_OK.test(u) && !u.includes("/artist//") ? u : null);
 const UA = { "user-agent": "music-app/1.0 (personal music site on Cloudflare Workers)", accept: "application/json" };
 
@@ -497,29 +496,6 @@ async function wikiLookup(name) {
   for (const h of (await s.json())?.query?.search || []) { const hit = pickSummary(await wikiSummary(h.title), name); if (hit) return withGenres(hit); }
   return null;
 }
-async function deezerPicture(name) {
-  const r = await fetch(`${DZ}/search/artist?limit=5&q=${encodeURIComponent(name)}`, { headers: UA, cf: { cacheTtl: 600, cacheEverything: true } });
-  const d = await r.json();
-  if (!r.ok || d.error) throw new Error("deezer unavailable");
-  const hit = (d.data || []).find((x) => norm(x.name) === norm(name));
-  return hit ? safeImage(hit.picture_medium) : null;
-}
-// image: a URL, null = looked and found nothing, missing = not looked yet (e.g. a service was down)
-async function enrichMembers(env, name, row) {
-  let members = []; try { members = JSON.parse(row.members || "[]"); } catch {}
-  const todo = members.filter((m) => !("image" in m)).slice(0, 12);
-  if (!todo.length) return members;
-  await Promise.allSettled(todo.map(async (m) => {
-    let image = null, looked = true;
-    if (m.url) {
-      try { const s = await wikiSummary(decodeURIComponent(m.url.split("/wiki/")[1] || "")); image = safeImage(s && s.thumbnail && s.thumbnail.source); } catch { looked = false; }
-    }
-    if (!image && looked) { try { image = await deezerPicture(m.name); } catch { looked = false; } }
-    if (looked) m.image = image;
-  }));
-  await env.DB.prepare("UPDATE artist_info SET members = ? WHERE name = ?").bind(JSON.stringify(members), name).run();
-  return members;
-}
 const parseGenres = (r) => { try { const a = JSON.parse(r?.genres || "[]"); return Array.isArray(a) ? a : []; } catch { return []; } };
 async function infoSave(DB, name, d) {
   await DB.prepare(`INSERT INTO artist_info (name, text, url, wtitle, rev, genres, kind, members, checked_at) VALUES (?,?,?,?,?,?,?,?,?)
@@ -544,10 +520,8 @@ async function refreshInfo(env, name, row) {
   if (same && legacy && box === null) return "unchanged"; // could not read it now: try again next time
   const info = parseInfobox(box, cur.desc);
   const genres = gw.length ? gw : info.genres.length ? info.genres : old;
-  let oldM = []; try { oldM = JSON.parse(row.members || "[]"); } catch {}
-  const next = { ...cur, genres, kind: info.kind, members: info.members.map((m) => { const o = oldM.find((x) => x.name === m.name && "image" in x); return o ? { ...m, image: o.image } : m; }) };
-  const plain = (list) => JSON.stringify(list.map(({ name, role, url }) => ({ name, role, url }))); // pictures do not count as a change
-  const identical = next.text === row.text && JSON.stringify(genres) === JSON.stringify(old) && next.kind === (row.kind || "") && plain(next.members) === plain(oldM);
+  const next = { ...cur, genres, kind: info.kind, members: info.members };
+  const identical = next.text === row.text && JSON.stringify(genres) === JSON.stringify(old) && next.kind === (row.kind || "") && JSON.stringify(next.members) === (row.members || "[]");
   if (identical) { // edited elsewhere on the page: only remember the new revision
     if (cur.rev !== row.rev) await DB.prepare("UPDATE artist_info SET rev = ? WHERE name = ?").bind(cur.rev, name).run();
     return "unchanged";
@@ -707,36 +681,6 @@ async function api(req, env, url, ctx) {
     return json(pls.map((p) => ({ ...p, updated_at: Math.max(p.created_at, upd[p.id] || 0), tracks: by[p.id] || [] })));
   }
   if (path === "/api/site" && m === "GET") return json(await siteSettings(DB));
-  if (path === "/api/entity-reactions" && m === "GET") {
-    const { results } = await DB.prepare(`SELECT kind, entity, COALESCE(SUM(reaction = 'heart'), 0) AS hearts, COALESCE(SUM(reaction = 'like'), 0) AS likes, COALESCE(SUM(reaction = 'dislike'), 0) AS dislikes FROM entity_reactions GROUP BY kind, entity`).all();
-    const out = { artist: Object.create(null), playlist: Object.create(null) };
-    for (const r of results) if (out[r.kind]) out[r.kind][r.entity] = { hearts: r.hearts, likes: r.likes, dislikes: r.dislikes };
-    return json(out, 200, { "cache-control": "no-cache" });
-  }
-  if (path === "/api/react-entity" && m === "POST") {
-    const b = await req.json().catch(() => ({}));
-    const vid = req.headers.get("X-Visitor") || "";
-    const type = b.type, key = clean(b.key, 200), kind = b.kind;
-    if (!/^[\w-]{8,64}$/.test(vid) || !["artist", "playlist"].includes(type) || !key || !["heart", "like", "dislike"].includes(kind)) return json({ error: "Bad request." }, 400);
-    const exists = type === "artist" ? await libraryHasArtist(DB, key) : !!(await DB.prepare("SELECT 1 FROM playlists WHERE id = ?").bind(key).first());
-    if (!exists) return json({ error: "Not found." }, 404);
-    const voter = await sha256(vid), stmts = [];
-    if (b.on) {
-      stmts.push(DB.prepare("INSERT OR IGNORE INTO entity_reactions (kind, entity, voter, reaction) VALUES (?,?,?,?)").bind(type, key, voter, kind));
-      const other = kind === "like" ? "dislike" : kind === "dislike" ? "like" : null;
-      if (other) stmts.push(DB.prepare("DELETE FROM entity_reactions WHERE kind = ? AND entity = ? AND voter = ? AND reaction = ?").bind(type, key, voter, other));
-    } else stmts.push(DB.prepare("DELETE FROM entity_reactions WHERE kind = ? AND entity = ? AND voter = ? AND reaction = ?").bind(type, key, voter, kind));
-    await DB.batch(stmts);
-    return json(await DB.prepare(`SELECT COALESCE(SUM(reaction = 'heart'), 0) AS hearts, COALESCE(SUM(reaction = 'like'), 0) AS likes, COALESCE(SUM(reaction = 'dislike'), 0) AS dislikes FROM entity_reactions WHERE kind = ? AND entity = ?`).bind(type, key).first());
-  }
-  if (path === "/api/lineup" && m === "GET") { // pictures of the band members (looked up once, then saved)
-    const name = clean(url.searchParams.get("name"));
-    if (!name || !(await libraryHasArtist(DB, name))) return json({ members: [] }, 404);
-    const row = await DB.prepare("SELECT members FROM artist_info WHERE name = ?").bind(name).first();
-    if (!row || !row.members) return json({ members: [] });
-    let members; try { members = await enrichMembers(env, name, row); } catch { try { members = JSON.parse(row.members); } catch { members = []; } }
-    return json({ members }, 200, { "cache-control": "no-cache" });
-  }
   if (path === "/api/suggest" && m === "GET") return suggest(url);
   if (path === "/api/bio" && m === "GET") return serveBio(env, url, ctx);
   if (path === "/api/similar" && m === "GET") return serveSimilar(env, url);
@@ -843,10 +787,6 @@ async function api(req, env, url, ctx) {
     const row = await DB.prepare("SELECT * FROM artist_info WHERE name = ?").bind(name).first();
     try { return json({ status: await refreshInfo(env, name, row) }); }
     catch { return json({ error: "Wikipedia is unavailable right now." }, 502); }
-  }
-  if ((x = path.match(/^\/api\/admin\/playlists\/([\w-]+)\/tracks\/([\w-]+)$/)) && m === "DELETE") {
-    await DB.prepare("DELETE FROM playlist_tracks WHERE playlist_id = ? AND track_id = ?").bind(x[1], x[2]).run();
-    return json({ ok: true });
   }
   if (path === "/api/admin/settings" && m === "PUT") {
     const b = await req.json().catch(() => ({}));
@@ -996,7 +936,6 @@ async function api(req, env, url, ctx) {
     await DB.batch([
       DB.prepare("DELETE FROM playlist_tracks WHERE playlist_id = ?").bind(x[1]),
       DB.prepare("DELETE FROM playlists WHERE id = ?").bind(x[1]),
-      DB.prepare("DELETE FROM entity_reactions WHERE kind = 'playlist' AND entity = ?").bind(x[1]),
     ]);
     await env.MUSIC.delete(`art/playlist/${x[1]}`);
     return json({ ok: true });
@@ -1064,7 +1003,7 @@ async function api(req, env, url, ctx) {
     } while (cursor);
     await DB.batch([
       DB.prepare("DELETE FROM playlist_tracks"), DB.prepare("DELETE FROM playlists"),
-      DB.prepare("DELETE FROM reactions"), DB.prepare("DELETE FROM tracks"), DB.prepare("DELETE FROM requests"), DB.prepare("DELETE FROM artist_info"), DB.prepare("DELETE FROM artist_similar"), DB.prepare("DELETE FROM entity_reactions"),
+      DB.prepare("DELETE FROM reactions"), DB.prepare("DELETE FROM tracks"), DB.prepare("DELETE FROM requests"), DB.prepare("DELETE FROM artist_info"), DB.prepare("DELETE FROM artist_similar"),
     ]);
     return json({ ok: true, removed });
   }
