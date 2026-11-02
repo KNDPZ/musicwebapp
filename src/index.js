@@ -36,37 +36,47 @@ let ready;
 function init(env) {
   return (ready ??= (async () => {
     const q = (s) => env.DB.prepare(s);
-    // If the tables already exist (an upgrade) a hiccup while re-checking them must not take the whole site down.
-    const setup = [
-      q("CREATE TABLE IF NOT EXISTS admin (id TEXT PRIMARY KEY, salt TEXT NOT NULL, hash TEXT NOT NULL)"),
-      q("CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, expires INTEGER NOT NULL)"),
-      q("CREATE TABLE IF NOT EXISTS attempts (ip TEXT NOT NULL, ts INTEGER NOT NULL)"),
-      q(`CREATE TABLE IF NOT EXISTS tracks (
+    // Run each statement on its own. D1 batch() is atomic: one failure rolls the whole
+    // batch back, so a hiccup on a new table/index during an upgrade used to take the
+    // entire site down. Individual try/catch keeps the site up even if one step fails.
+    const tables = [
+      "CREATE TABLE IF NOT EXISTS admin (id TEXT PRIMARY KEY, salt TEXT NOT NULL, hash TEXT NOT NULL)",
+      "CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, expires INTEGER NOT NULL)",
+      "CREATE TABLE IF NOT EXISTS attempts (ip TEXT NOT NULL, ts INTEGER NOT NULL)",
+      `CREATE TABLE IF NOT EXISTS tracks (
         id TEXT PRIMARY KEY, title TEXT NOT NULL, artist TEXT NOT NULL, album TEXT NOT NULL,
         track_no INTEGER DEFAULT 0, duration REAL DEFAULT 0, size INTEGER DEFAULT 0,
-        plays INTEGER DEFAULT 0, created_at INTEGER NOT NULL, hash TEXT)`),
-      q("CREATE TABLE IF NOT EXISTS playlists (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, created_at INTEGER NOT NULL)"),
-      q("CREATE TABLE IF NOT EXISTS playlist_tracks (playlist_id TEXT NOT NULL, track_id TEXT NOT NULL, added_at INTEGER NOT NULL, PRIMARY KEY (playlist_id, track_id))"),
-      q("CREATE TABLE IF NOT EXISTS reactions (track_id TEXT NOT NULL, voter TEXT NOT NULL, kind TEXT NOT NULL, PRIMARY KEY (track_id, voter, kind))"),
-      q("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"),
-      q("CREATE TABLE IF NOT EXISTS entity_reactions (kind TEXT NOT NULL, entity TEXT NOT NULL, voter TEXT NOT NULL, reaction TEXT NOT NULL, PRIMARY KEY (kind, entity, voter, reaction))"),
-      q("CREATE TABLE IF NOT EXISTS artist_similar (name TEXT PRIMARY KEY, list TEXT NOT NULL, fetched_at INTEGER NOT NULL)"),
-      q("CREATE TABLE IF NOT EXISTS artist_info (name TEXT PRIMARY KEY, text TEXT, url TEXT, wtitle TEXT, rev TEXT, genres TEXT NOT NULL DEFAULT '[]', checked_at INTEGER NOT NULL)"),
-      q(`CREATE TABLE IF NOT EXISTS requests (
+        plays INTEGER DEFAULT 0, created_at INTEGER NOT NULL, hash TEXT)`,
+      "CREATE TABLE IF NOT EXISTS playlists (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, created_at INTEGER NOT NULL)",
+      "CREATE TABLE IF NOT EXISTS playlist_tracks (playlist_id TEXT NOT NULL, track_id TEXT NOT NULL, added_at INTEGER NOT NULL, PRIMARY KEY (playlist_id, track_id))",
+      "CREATE TABLE IF NOT EXISTS reactions (track_id TEXT NOT NULL, voter TEXT NOT NULL, kind TEXT NOT NULL, PRIMARY KEY (track_id, voter, kind))",
+      "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+      "CREATE TABLE IF NOT EXISTS entity_reactions (kind TEXT NOT NULL, entity TEXT NOT NULL, voter TEXT NOT NULL, reaction TEXT NOT NULL, PRIMARY KEY (kind, entity, voter, reaction))",
+      "CREATE TABLE IF NOT EXISTS artist_similar (name TEXT PRIMARY KEY, list TEXT NOT NULL, fetched_at INTEGER NOT NULL)",
+      "CREATE TABLE IF NOT EXISTS artist_info (name TEXT PRIMARY KEY, text TEXT, url TEXT, wtitle TEXT, rev TEXT, genres TEXT NOT NULL DEFAULT '[]', checked_at INTEGER NOT NULL)",
+      `CREATE TABLE IF NOT EXISTS requests (
         id TEXT PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL, artist TEXT NOT NULL DEFAULT '', album TEXT NOT NULL DEFAULT '',
-        image TEXT, url TEXT, dedupe TEXT NOT NULL UNIQUE, voter TEXT NOT NULL, ip TEXT NOT NULL, created_at INTEGER NOT NULL)`),
-      q("INSERT OR IGNORE INTO admin (id, salt, hash) VALUES ('admin', ?, ?)").bind(DEFAULT_SALT, DEFAULT_HASH),
+        image TEXT, url TEXT, dedupe TEXT NOT NULL UNIQUE, voter TEXT NOT NULL, ip TEXT NOT NULL, created_at INTEGER NOT NULL)`,
     ];
-    try { await env.DB.batch(setup); }
-    catch (e) { await q("SELECT id FROM tracks LIMIT 1").first(); console.error("setup batch failed, continuing:", e.message); } // throws if the tables really are missing
-    try { await q("ALTER TABLE tracks ADD COLUMN hash TEXT").run(); } catch {} // upgrade from an older version
-    try { await q("ALTER TABLE tracks ADD COLUMN artists TEXT").run(); } catch {} // JSON list: one entry per artist on the song
-    try { await q("ALTER TABLE playlists ADD COLUMN cover_v INTEGER NOT NULL DEFAULT 0").run(); } catch {} // custom playlist image version
+    for (const sql of tables) {
+      try { await q(sql).run(); } catch (e) { console.error("schema create failed:", e.message); }
+    }
+    try {
+      await q("INSERT OR IGNORE INTO admin (id, salt, hash) VALUES ('admin', ?, ?)").bind(DEFAULT_SALT, DEFAULT_HASH).run();
+    } catch (e) { console.error("admin seed failed:", e.message); }
+    // Column upgrades (already-present columns just throw; ignore).
+    try { await q("ALTER TABLE tracks ADD COLUMN hash TEXT").run(); } catch {}
+    try { await q("ALTER TABLE tracks ADD COLUMN artists TEXT").run(); } catch {}
+    try { await q("ALTER TABLE playlists ADD COLUMN cover_v INTEGER NOT NULL DEFAULT 0").run(); } catch {}
     for (const col of ["status TEXT NOT NULL DEFAULT 'active'", "done_at INTEGER", "meta TEXT", "playlist_id TEXT"])
-      try { await q(`ALTER TABLE requests ADD COLUMN ${col}`).run(); } catch {} // request history + Spotify playlist details
+      try { await q(`ALTER TABLE requests ADD COLUMN ${col}`).run(); } catch {}
     for (const col of ["kind TEXT", "members TEXT"])
-      try { await q(`ALTER TABLE artist_info ADD COLUMN ${col}`).run(); } catch {} // band or solo, and the lineup
-    try { await q("CREATE UNIQUE INDEX IF NOT EXISTS idx_tracks_hash ON tracks(hash)").run(); } catch {}
+      try { await q(`ALTER TABLE artist_info ADD COLUMN ${col}`).run(); } catch {}
+    // Unique index on hash: fails if the library already has duplicate file hashes.
+    // Do not take the site down for that; upload logic still dedupes by checking the column.
+    try { await q("CREATE UNIQUE INDEX IF NOT EXISTS idx_tracks_hash ON tracks(hash)").run(); } catch (e) {
+      console.error("idx_tracks_hash skipped (likely duplicate hashes):", e.message);
+    }
     try { await q("CREATE INDEX IF NOT EXISTS idx_reactions_track ON reactions(track_id)").run(); } catch {}
   })().catch((e) => { ready = undefined; throw e; }));
 }
@@ -708,10 +718,15 @@ async function api(req, env, url, ctx) {
   }
   if (path === "/api/site" && m === "GET") return json(await siteSettings(DB));
   if (path === "/api/entity-reactions" && m === "GET") {
-    const { results } = await DB.prepare(`SELECT kind, entity, COALESCE(SUM(reaction = 'heart'), 0) AS hearts, COALESCE(SUM(reaction = 'like'), 0) AS likes, COALESCE(SUM(reaction = 'dislike'), 0) AS dislikes FROM entity_reactions GROUP BY kind, entity`).all();
-    const out = { artist: Object.create(null), playlist: Object.create(null) };
-    for (const r of results) if (out[r.kind]) out[r.kind][r.entity] = { hearts: r.hearts, likes: r.likes, dislikes: r.dislikes };
-    return json(out, 200, { "cache-control": "no-cache" });
+    try {
+      const { results } = await DB.prepare(`SELECT kind, entity, COALESCE(SUM(reaction = 'heart'), 0) AS hearts, COALESCE(SUM(reaction = 'like'), 0) AS likes, COALESCE(SUM(reaction = 'dislike'), 0) AS dislikes FROM entity_reactions GROUP BY kind, entity`).all();
+      const out = { artist: Object.create(null), playlist: Object.create(null) };
+      for (const r of results) if (out[r.kind]) out[r.kind][r.entity] = { hearts: r.hearts, likes: r.likes, dislikes: r.dislikes };
+      return json(out, 200, { "cache-control": "no-cache" });
+    } catch {
+      // Table may not exist yet on a partial upgrade; never take the site down.
+      return json({ artist: {}, playlist: {} }, 200, { "cache-control": "no-cache" });
+    }
   }
   if (path === "/api/react-entity" && m === "POST") {
     const b = await req.json().catch(() => ({}));
@@ -721,13 +736,17 @@ async function api(req, env, url, ctx) {
     const exists = type === "artist" ? await libraryHasArtist(DB, key) : !!(await DB.prepare("SELECT 1 FROM playlists WHERE id = ?").bind(key).first());
     if (!exists) return json({ error: "Not found." }, 404);
     const voter = await sha256(vid), stmts = [];
-    if (b.on) {
-      stmts.push(DB.prepare("INSERT OR IGNORE INTO entity_reactions (kind, entity, voter, reaction) VALUES (?,?,?,?)").bind(type, key, voter, kind));
-      const other = kind === "like" ? "dislike" : kind === "dislike" ? "like" : null;
-      if (other) stmts.push(DB.prepare("DELETE FROM entity_reactions WHERE kind = ? AND entity = ? AND voter = ? AND reaction = ?").bind(type, key, voter, other));
-    } else stmts.push(DB.prepare("DELETE FROM entity_reactions WHERE kind = ? AND entity = ? AND voter = ? AND reaction = ?").bind(type, key, voter, kind));
-    await DB.batch(stmts);
-    return json(await DB.prepare(`SELECT COALESCE(SUM(reaction = 'heart'), 0) AS hearts, COALESCE(SUM(reaction = 'like'), 0) AS likes, COALESCE(SUM(reaction = 'dislike'), 0) AS dislikes FROM entity_reactions WHERE kind = ? AND entity = ?`).bind(type, key).first());
+    try {
+      if (b.on) {
+        stmts.push(DB.prepare("INSERT OR IGNORE INTO entity_reactions (kind, entity, voter, reaction) VALUES (?,?,?,?)").bind(type, key, voter, kind));
+        const other = kind === "like" ? "dislike" : kind === "dislike" ? "like" : null;
+        if (other) stmts.push(DB.prepare("DELETE FROM entity_reactions WHERE kind = ? AND entity = ? AND voter = ? AND reaction = ?").bind(type, key, voter, other));
+      } else stmts.push(DB.prepare("DELETE FROM entity_reactions WHERE kind = ? AND entity = ? AND voter = ? AND reaction = ?").bind(type, key, voter, kind));
+      await DB.batch(stmts);
+      return json(await DB.prepare(`SELECT COALESCE(SUM(reaction = 'heart'), 0) AS hearts, COALESCE(SUM(reaction = 'like'), 0) AS likes, COALESCE(SUM(reaction = 'dislike'), 0) AS dislikes FROM entity_reactions WHERE kind = ? AND entity = ?`).bind(type, key).first());
+    } catch {
+      return json({ hearts: 0, likes: 0, dislikes: 0 });
+    }
   }
   if (path === "/api/lineup" && m === "GET") { // pictures of the band members (looked up once, then saved)
     const name = clean(url.searchParams.get("name"));
@@ -996,8 +1015,8 @@ async function api(req, env, url, ctx) {
     await DB.batch([
       DB.prepare("DELETE FROM playlist_tracks WHERE playlist_id = ?").bind(x[1]),
       DB.prepare("DELETE FROM playlists WHERE id = ?").bind(x[1]),
-      DB.prepare("DELETE FROM entity_reactions WHERE kind = 'playlist' AND entity = ?").bind(x[1]),
     ]);
+    try { await DB.prepare("DELETE FROM entity_reactions WHERE kind = 'playlist' AND entity = ?").bind(x[1]).run(); } catch {}
     await env.MUSIC.delete(`art/playlist/${x[1]}`);
     return json({ ok: true });
   }
@@ -1062,10 +1081,14 @@ async function api(req, env, url, ctx) {
       if (keys.length) { await env.MUSIC.delete(keys); removed += keys.length; }
       cursor = l.truncated ? l.cursor : undefined;
     } while (cursor);
+    // Clear core tables first; optional tables (entity_reactions etc.) are best-effort so a
+    // partial schema upgrade never blocks the wipe.
     await DB.batch([
       DB.prepare("DELETE FROM playlist_tracks"), DB.prepare("DELETE FROM playlists"),
-      DB.prepare("DELETE FROM reactions"), DB.prepare("DELETE FROM tracks"), DB.prepare("DELETE FROM requests"), DB.prepare("DELETE FROM artist_info"), DB.prepare("DELETE FROM artist_similar"), DB.prepare("DELETE FROM entity_reactions"),
+      DB.prepare("DELETE FROM reactions"), DB.prepare("DELETE FROM tracks"), DB.prepare("DELETE FROM requests"),
+      DB.prepare("DELETE FROM artist_info"), DB.prepare("DELETE FROM artist_similar"),
     ]);
+    try { await DB.prepare("DELETE FROM entity_reactions").run(); } catch {}
     return json({ ok: true, removed });
   }
   if (path === "/api/admin/password" && m === "POST") {
