@@ -35,6 +35,29 @@ function adSlot() {
 }
 applySite();
 
+const BOOT_N = 40;
+function paintBoot(pct, what) {
+  const ring = $("#bootTicks");
+  if (!ring) return;
+  if (!ring.childElementCount) {
+    ring.innerHTML = Array.from({ length: BOOT_N }, (_, i) =>
+      `<i class="boot-tick" style="transform:rotate(${(360 / BOOT_N) * i}deg)"></i>`).join("");
+  }
+  pct = Math.max(0, Math.min(100, Math.round(pct)));
+  $("#bootPct").textContent = String(pct);
+  $("#bootFill").style.width = pct + "%";
+  if (what) $("#bootWhat").textContent = what;
+  const lit = Math.round((pct / 100) * BOOT_N);
+  [...ring.children].forEach((t, i) => t.classList.toggle("on", i < lit));
+}
+function hideBoot() {
+  paintBoot(100, "Songs, artists and playlists");
+  const el = $("#boot");
+  if (!el) return;
+  setTimeout(() => { el.classList.add("hide"); el.setAttribute("hidden", ""); }, 220);
+}
+paintBoot(3, "Songs, artists and playlists");
+
 const art = (src, label, cls = "") =>
   `<span class="art ${cls}" data-i="${esc((label || "?").trim().charAt(0).toUpperCase())}">${src ? `<img loading="lazy" alt="" src="${esc(src)}">` : ""}</span>`;
 document.addEventListener("error", (e) => { if (e.target.tagName === "IMG") e.target.remove(); }, true);
@@ -50,13 +73,29 @@ async function getJson(url) { // { data } or { fail: "what went wrong" }
   } catch (e) { return { fail: `${url}: ${(e && e.message) || "no connection"}` }; }
 }
 async function load() {
-  const [t, p, s, en] = await Promise.all([getJson("/api/tracks"), getJson("/api/playlists"), getJson("/api/site"), getJson("/api/entity-reactions")]);
+  const steps = [
+    ["/api/tracks", "Songs"],
+    ["/api/playlists", "Playlists"],
+    ["/api/site", "Site"],
+    ["/api/entity-reactions", "Reactions"],
+  ];
+  let done = 0;
+  paintBoot(6, "Songs");
+  const results = await Promise.all(steps.map(async ([url, label], i) => {
+    const r = await getJson(url);
+    done++;
+    paintBoot(8 + done * 22, steps[Math.min(done, steps.length - 1)][1] || label);
+    return r;
+  }));
+  const [t, p, s, en] = results;
   entity = { artist: (en.data && en.data.artist) || {}, playlist: (en.data && en.data.playlist) || {} };
   tracks = arr(t.data); playlists = arr(p.data);
   loadError = t.fail || p.fail || (t.data && !Array.isArray(t.data) ? "/api/tracks returned something unexpected" : "");
   if (s.data && typeof s.data.name === "string") { site = { ...s.data, ad: s.data.ad || { enabled: false, html: "", height: 340 } }; store.set("site", { name: site.name, title: site.title, favicon: site.favicon }); applySite(); }
   byId = Object.fromEntries(tracks.map((x) => [x.id, x]));
+  paintBoot(100, "Songs, artists and playlists");
   render();
+  hideBoot();
 }
 const errorBox = (text, detail) => `<div class="empty"><p>${esc(text)}</p>${detail ? `<details style="margin:12px 0"><summary style="justify-content:center;font-size:14px">Details</summary><p class="muted" style="word-break:break-word">${esc(detail)}</p></details>` : ""}<button class="btn" type="button" data-act="retry">Try again</button></div>`;
 
@@ -79,15 +118,20 @@ function parse() {
   const raw = location.hash.slice(1) || "recent", i = raw.indexOf("/");
   return { a: i < 0 ? raw : raw.slice(0, i), arg: i < 0 ? "" : raw.slice(i + 1) };
 }
-// Left menu: a main tab opens its sub tabs underneath it when it is the active one.
-function renderNav(tab, sub) {
-  $("#nav").innerHTML = Object.entries(TABS).map(([k, v]) => {
-    const on = k === tab, sm = SUBMAPS[k];
-    let h = `<a class="nav-item" href="#${k}"${on ? (sm ? ' aria-current="true"' : ' aria-current="page"') : ""}>${v}</a>`;
-    if (on && sm) h += `<div class="subnav">${Object.entries(sm.items).map(([s, sv]) =>
-      `<a class="nav-sub" href="#${k}${s === sm.def ? "" : "/" + s}"${s === sub ? ' aria-current="page"' : ""}>${sv}</a>`).join("")}</div>`;
-    return h;
-  }).join("");
+// Left menu is only the main sections. Sub tabs live in the sticky bar under search.
+function renderNav(tab) {
+  $("#nav").innerHTML = Object.entries(TABS).map(([k, v]) =>
+    `<a class="nav-item" href="#${k}"${k === tab ? ' aria-current="page"' : ""}>${v}</a>`).join("");
+}
+function renderSub(tab, sub) {
+  const bar = $("#subbar");
+  const sm = SUBMAPS[tab];
+  if (!bar) return;
+  if (!sm) { bar.hidden = true; bar.innerHTML = ""; return; }
+  bar.hidden = false;
+  bar.setAttribute("aria-label", TABS[tab] || "Sections");
+  bar.innerHTML = Object.entries(sm.items).map(([s, sv]) =>
+    `<a href="#${tab}${s === sm.def ? "" : "/" + s}"${s === sub ? ' aria-current="page"' : ""}>${sv}</a>`).join("");
 }
 const match = (t) => !query || `${t.title} ${artistLine(t)} ${albumName(t)}`.toLowerCase().includes(query);
 const latest = (l) => Math.max(0, ...l.map((t) => t.created_at));
@@ -134,15 +178,16 @@ function render() {
 }
 function renderPage() {
   const { a, arg } = parse();
+  if (a === "home") { renderNav(""); renderSub("", null); landing($("#list")); markRows(); return; }
   const tab = a === "artist" || a === "similar" ? "artists" : a === "playlist" ? "playlists" : a === "album" ? "recent" : has(TABS, a) ? a : "recent";
   const sm = SUBMAPS[tab];
   const head = arg.split("/")[0];
   const sub = !sm ? null : a === "album" ? "albums" : has(sm.items, head) ? head : sm.def;
-  renderNav(tab, sub);
+  renderNav(tab);
+  renderSub(tab, sub);
   const el = $("#list");
   if (tab === "request") { if (sub === "new") requestForm(el); else if (sub === "previous") requestPrevious(el, arg.split("/")[1]); else requestQueue(el); return; }
-  const home = tab === "recent" && sub === "songs";
-  if (!tracks.length) { el.innerHTML = loadError ? errorBox("The music library couldn't be loaded.", loadError) : (home ? adSlot() : "") + empty("No music yet. Check back soon."); noView(); return; }
+  if (!tracks.length) { el.innerHTML = loadError ? errorBox("The music library couldn't be loaded.", loadError) : empty("No music yet. Check back soon."); noView(); return; }
   if (a === "artist") artistPage(el, dec(arg));
   else if (a === "similar") similarPage(el, dec(arg));
   else if (a === "playlist") playlistPage(el, dec(arg));
@@ -161,11 +206,64 @@ function renderPage() {
   markRows();
 }
 
+const shuffle = (list) => {
+  const a = [...list];
+  for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+  return a;
+};
+function pickMix(items, newer, hotter) {
+  const used = new Set();
+  const take = (ordered, n) => {
+    const out = [];
+    for (const x of ordered) {
+      if (used.has(x.id)) continue;
+      used.add(x.id); out.push(x);
+      if (out.length === n) break;
+    }
+    return out;
+  };
+  const fresh = take([...items].sort((a, b) => newer(b) - newer(a)), 5);
+  const hot = take([...items].sort((a, b) => hotter(b) - hotter(a)), 5);
+  const rest = shuffle(items.filter((x) => !used.has(x.id)));
+  return shuffle([...fresh, ...hot, ...take(rest, 10)]);
+}
+function artistPool() {
+  const by = dict();
+  tracks.forEach((t) => artistsOf(t).forEach((n) => {
+    const o = by[n] ??= { id: n, name: n, created: 0, plays: 0, songs: 0 };
+    o.created = Math.max(o.created, t.created_at || 0);
+    o.plays += t.plays || 0;
+    o.songs++;
+  }));
+  return Object.values(by);
+}
+const moreTile = (href, label) => `<a class="simtile" href="${href}"><span class="art round dots" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg></span><b>Show more</b><span class="muted">${esc(label)}</span></a>`;
+function landing(el) {
+  noView();
+  if (loadError && !tracks.length) { el.innerHTML = errorBox("The music library couldn't be loaded.", loadError); return; }
+  if (!tracks.length) { el.innerHTML = empty("No music yet. Check back soon."); return; }
+  const qOk = (s) => !query || String(s).toLowerCase().includes(query);
+  const artists = pickMix(artistPool().filter((a) => qOk(a.name)), (a) => a.created, (a) => a.plays);
+  const songs = pickMix(tracks.filter(match).map((t) => ({ id: t.id, t, created: t.created_at || 0, plays: t.plays || 0 })), (s) => s.created, (s) => s.plays);
+  const pls = pickMix(playlists.filter((p) => qOk(p.name)).map((p) => ({
+    id: p.id, p, created: p.updated_at || p.created_at || 0,
+    plays: (p.tracks || []).reduce((n, id) => n + ((byId[id] && byId[id].plays) || 0), 0),
+  })), (p) => p.created, (p) => p.plays);
+  const ad = query ? "" : adSlot();
+  const row = (title, inner) => `<section class="hsec"><h2>${title}</h2><div class="hrow">${inner}</div></section>`;
+  el.innerHTML =
+    (ad ? `<div class="home-ad">${ad}</div>` : "")
+    + row("Artists", artists.map((a) => `<a class="tile" href="#artist/${enc(a.name)}">${art(artistArt(a.name), a.name)}<b>${esc(a.name)}</b><span class="muted">${plural(a.songs, "song")}</span></a>`).join("") + moreTile("#artists", "All artists"))
+    + row("Songs", songs.map((s) => `<button class="tile sq song" data-id="${s.t.id}">${art(albumArt(s.t), albumName(s.t) || s.t.title)}<b>${esc(s.t.title)}</b><span class="muted">${esc(artistLine(s.t))}</span></button>`).join("") + moreTile("#recent", "All songs"))
+    + row("Playlists", pls.map((x) => playlistTile(x.p)).join("") + moreTile("#playlists", "All playlists"));
+  view = { ids: songs.map((s) => s.t.id), label: "Home", pl: null };
+}
+
 // Recently added > Songs: every song as a tile, newest first
 function songList(el) {
   const l = tracks.filter(match).sort((x, y) => y.created_at - x.created_at);
   view = { ids: l.map((t) => t.id), label: "Recently added", pl: null };
-  el.innerHTML = (query ? "" : adSlot()) + (l.length ? songTiles(l) : empty("Nothing matches your search."));
+  el.innerHTML = l.length ? songTiles(l) : empty("Nothing matches your search.");
 }
 
 // Most listened / hearted / liked / disliked
@@ -806,9 +904,9 @@ if ("mediaSession" in navigator) {
 // keep page padding and the Up next panel clear of the player bar
 new ResizeObserver(() => document.documentElement.style.setProperty("--ph", $("#player").offsetHeight + "px")).observe($("#player"));
 
-// the site name (top left) goes home
+// the site name (top left) opens the landing page only
 $("#brand").addEventListener("click", (e) => {
-  if (!location.hash || location.hash === "#recent") { e.preventDefault(); $("#q").value = ""; query = ""; render(); window.scrollTo(0, 0); }
+  if (location.hash === "#home") { e.preventDefault(); $("#q").value = ""; query = ""; render(); window.scrollTo(0, 0); }
 });
 
 // ---------- admin gear + login dialog ----------

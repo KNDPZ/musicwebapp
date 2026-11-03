@@ -273,3 +273,29 @@ body.up-open #lyrics.full{right:340px}
 #lyrics.full .plain{font-size:clamp(18px,2vw,26px);max-width:44ch;margin:0 auto;text-align:center}
 .linkbtn{background:none;border:0;color:var(--text);font:inherit;text-align:left;cursor:pointer;padding:6px 0;min-height:36px}
 .linkbtn:hover{text-decoration:underline}
+
+/* ---- v11: boot loader, home, sticky sub tabs ---- */
+.boot{position:fixed;inset:0;z-index:80;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:28px;background:#050505;color:#e8fff6}
+.boot.hide{opacity:0;visibility:hidden;transition:opacity .35s,visibility 0s .35s}
+.boot-ring{position:relative;width:168px;height:168px}
+.boot-ticks{position:absolute;inset:0}
+.boot-tick{position:absolute;left:50%;top:8px;width:7px;height:22px;margin-left:-3.5px;border-radius:3px;background:#2a2a2a;transform-origin:center 76px}
+.boot-tick.on{background:#d8d8d8}
+.boot-ring b{position:absolute;inset:0;display:grid;place-items:center;font-size:28px;font-weight:500;letter-spacing:.02em;color:#f2f2f2}
+.boot-track{width:min(420px,78vw);height:22px;border:2px solid #f4f4f4;border-radius:4px;padding:3px;background:#000}
+.boot-track i{display:block;height:100%;width:0;border-radius:1px;background:repeating-linear-gradient(90deg,#f4f4f4 0 2px,transparent 2px 5px);transition:width .18s linear}
+.boot-what{margin:0;min-height:1.4em;font-size:15px;letter-spacing:.04em;color:#d0d0d0;text-align:center}
+.stick{position:sticky;top:0;z-index:12;background:var(--bg);padding-bottom:8px;margin:0 -8px 8px;padding-left:8px;padding-right:8px}
+.stick .top{margin-bottom:8px}
+.subbar{display:flex;gap:8px;overflow-x:auto;padding:2px 0 6px}
+.subbar[hidden]{display:none}
+.subbar a{display:inline-flex;align-items:center;min-height:40px;padding:0 16px;border-radius:20px;border:1px solid var(--line2);color:var(--muted);font-weight:650;font-size:14px;text-decoration:none;white-space:nowrap}
+.subbar a[aria-current=page]{background:var(--accent);border-color:var(--accent);color:#131211}
+.hsec{margin:8px 0 28px}
+.hsec h2{margin:0 0 12px;font-size:22px}
+.hrow{display:flex;gap:14px;overflow-x:auto;padding-bottom:8px;scroll-snap-type:x proximity}
+.hrow .tile,.hrow .simtile{flex:none;scroll-snap-align:start;width:168px}
+.hrow .simtile{width:128px;padding:8px 4px}
+.hrow .simtile .art{width:112px;height:112px}
+.home-ad{margin-bottom:8px}
+.ib.ico svg{fill:currentColor;stroke:currentColor;stroke-width:1.6}
