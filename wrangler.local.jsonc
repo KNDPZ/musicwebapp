@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "music-app",
+  "name": "musicwebapp",
   "main": "src/index.js",
   "compatibility_date": "2025-10-01",
   "assets": {
