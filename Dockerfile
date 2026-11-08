@@ -3,6 +3,11 @@
 
 FROM node:22-bookworm-slim
 
+# workerd needs system CA certificates for TLS
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Install dependencies (wrangler is needed at runtime for local mode)
