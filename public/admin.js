@@ -17,7 +17,7 @@ const mini = (src, label) => `<span class="art" data-i="${esc((label || "?").tri
 document.addEventListener("error", (e) => { if (e.target.tagName === "IMG") e.target.remove(); }, true);
 
 // ---------- sections (left menu) ----------
-const PANES = { collection: "Music collection", add: "Add music", playlists: "Playlists", requests: "Requests", settings: "General settings", account: "Account settings", danger: "Danger" };
+const PANES = { collection: "Music collection", add: "Add music", playlists: "Playlists", requests: "Requests", settings: "General settings", account: "Account settings", network: "Network", danger: "Danger" };
 function showPane() {
   const k = has(PANES, location.hash.slice(1)) ? location.hash.slice(1) : "collection";
   $("#anav").innerHTML = Object.entries(PANES).map(([id, label]) =>
@@ -31,7 +31,7 @@ async function show() {
   const { admin } = await (await fetch("/api/me")).json();
   $("#login").classList.toggle("hidden", admin);
   $("#panel").classList.toggle("hidden", !admin);
-  if (admin) { showPane(); refresh(); loadPlaylists(); loadRequests(); loadSite(); syncMode(); }
+  if (admin) { showPane(); refresh(); loadPlaylists(); loadRequests(); loadSite(); loadNetwork(); syncMode(); }
 }
 function syncMode() {
   $("#plField").classList.toggle("hidden", mode() !== "playlist");
@@ -618,6 +618,99 @@ $("#cleanForm").addEventListener("submit", async (e) => {
     flashMsg("#cleanMsg", `Done. ${j.removed} stored files deleted and the library is empty.`);
     page = 1; refresh(); loadPlaylists(); loadRequests();
   } else { $("#cMsg").textContent = j.error || "Something went wrong."; cCheck(); }
+});
+
+// ---------- network (peer-to-peer) ----------
+function paintNetShare(on) {
+  $("#netShare").checked = !!on;
+  $("#netShareBox").classList.toggle("hidden", !on);
+  if (on) $("#netLink").value = location.origin;
+}
+function peerRow(p) {
+  const ok = p.online || (p.last_ok && !p.last_error);
+  const status = ok
+    ? `<span style="color:var(--accent)">Connected</span> · ${p.track_count || 0} songs`
+    : `<span style="color:var(--danger)">Offline</span>${p.last_error ? ` · ${esc(p.last_error)}` : ""}`;
+  return `<tr data-peer="${p.id}">
+    <td><b>${esc(p.name || p.url)}</b><br><span class="muted" style="word-break:break-all">${esc(p.url)}</span><br><span class="muted">${status}</span></td>
+    <td style="text-align:right;white-space:nowrap">
+      <button class="btn ghost" data-a="refresh" ${small}>Refresh</button>
+      <button class="btn danger" data-a="rm" ${small}>Remove</button>
+    </td></tr>`;
+}
+async function loadNetwork() {
+  try {
+    const d = await (await fetch("/api/admin/network")).json();
+    paintNetShare(d.share);
+    window.__peers = d.peers || [];
+    $("#netPeers").innerHTML = window.__peers.length
+      ? `<table><tbody>${window.__peers.map(peerRow).join("")}</tbody></table>`
+      : "No peers yet.";
+  } catch {
+    $("#netPeers").textContent = "Could not load network settings.";
+  }
+}
+$("#netShare").addEventListener("change", async () => {
+  const on = $("#netShare").checked;
+  const r = await post("/api/admin/network", { share: on }, "PUT");
+  if (!r.ok) {
+    paintNetShare(!on);
+    flashMsg("#netShareMsg", (await r.json().catch(() => ({}))).error || "Couldn't save.", true);
+    return;
+  }
+  paintNetShare(on);
+  flashMsg("#netShareMsg", on ? "Sharing is on. Others can add your link." : "Sharing is off.");
+});
+$("#netCopy").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText($("#netLink").value);
+    flashMsg("#netShareMsg", "Link copied.");
+  } catch {
+    $("#netLink").select();
+    flashMsg("#netShareMsg", "Select the link and copy it manually.", true);
+  }
+});
+$("#netAddBtn").addEventListener("click", () => {
+  $("#netAddForm").classList.remove("hidden");
+  $("#netAddMsg").textContent = "";
+  $("#netPeerUrl").value = "";
+  $("#netPeerUrl").focus();
+});
+$("#netAddCancel").addEventListener("click", () => {
+  $("#netAddForm").classList.add("hidden");
+  $("#netAddMsg").textContent = "";
+});
+$("#netConnect").addEventListener("click", async () => {
+  const url = $("#netPeerUrl").value.trim();
+  if (!url) { flashMsg("#netAddMsg", "Paste a peer link first.", true); return; }
+  const b = $("#netConnect");
+  b.disabled = true; b.textContent = "Connecting…";
+  const r = await post("/api/admin/network/peers", { url });
+  const j = await r.json().catch(() => ({}));
+  b.disabled = false; b.textContent = "Connect";
+  if (!r.ok) { flashMsg("#netAddMsg", j.error || "Couldn't connect.", true); return; }
+  flashMsg("#netAddMsg", `Connected to “${j.name || j.url}” (${j.track_count || 0} songs).`);
+  $("#netAddForm").classList.add("hidden");
+  await loadNetwork();
+});
+$("#netPeers").addEventListener("click", async (e) => {
+  const b = e.target.closest("button"); if (!b || !b.dataset.a) return;
+  const id = b.closest("tr").dataset.peer;
+  if (b.dataset.a === "rm") {
+    if (!confirm("Remove this peer? Its songs will no longer appear here.")) return;
+    await fetch("/api/admin/network/peers/" + id, { method: "DELETE" });
+    await loadNetwork();
+    return;
+  }
+  if (b.dataset.a === "refresh") {
+    b.disabled = true; const label = b.textContent; b.textContent = "…";
+    const r = await fetch("/api/admin/network/peers/" + id + "/refresh", { method: "POST" });
+    const j = await r.json().catch(() => ({}));
+    b.disabled = false; b.textContent = label;
+    if (!r.ok) flashMsg("#netMsg", j.error || "Refresh failed.", true);
+    else flashMsg("#netMsg", `Updated “${j.name}”: ${j.track_count || 0} songs.`);
+    await loadNetwork();
+  }
 });
 
 show();

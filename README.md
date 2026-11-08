@@ -43,12 +43,22 @@ lyrics, Up next and volume on the right. Buttons are icons with a name on hover.
 ## Admin sections
 
 The admin page has a menu on the left: **Music collection** (30 songs per page), **Add music** (with an overall "10 out of 30" progress bar),
-**Playlists**, **Requests**, **General settings**, **Account settings** (the Change password window opens only when you click it) and **Danger** (clean database).
+**Playlists**, **Requests**, **General settings**, **Account settings** (the Change password window opens only when you click it), **Network** (peer-to-peer library sharing) and **Danger** (clean database).
 
 **General settings > Branding** changes the site name (top left of the site, click it to go home), the browser tab name and the browser icon.
 **General settings > Advertising** lets only the admin write an ad in HTML, CSS and JavaScript. It shows at the top of the front page
 (Recently added > Songs), above the songs, only while it is switched on. It runs in a sandboxed frame, so it cannot reach the rest of the
 site or the admin session. Links open in a new tab; add `target="_top"` to a link to stay in the app.
+
+## Network (peer-to-peer libraries)
+
+Several people can host their own copy of this app and link them together.
+
+1. On instance A, open **Admin → Network**, turn on **Share this library on the network**, and copy the share link.
+2. On instance B, open **Admin → Network**, click **+ Add peer**, paste A’s link and **Connect**.
+3. When the peer is online, its songs appear in B’s public library. Playback streams audio and artwork directly from A (nothing is copied into B’s R2).
+
+Sharing is off by default. Only the catalogue is exposed (`/api/tracks`, `/api/peer`, audio and art). Admin APIs stay private. Peers can be refreshed or removed at any time.
 
 ## Songs with several artists
 

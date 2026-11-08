@@ -1,5 +1,14 @@
 import { radioIds } from "/radio.js";
-import { artistArt, albumArt, albumName, artistsOf, artistLine, primaryArtist, adDoc, AD_SANDBOX } from "/art.js";
+import { artistArt as _artistArt, albumArt as _albumArt, albumName, artistsOf, artistLine, primaryArtist, adDoc, AD_SANDBOX } from "/art.js";
+// Prefix peer origin so remote artwork and audio load from the peer server.
+const albumArt = (t) => {
+  const u = _albumArt(t);
+  return t && t.origin && u.startsWith("/") ? t.origin + u : u;
+};
+const artistArt = (name, origin) => {
+  const u = _artistArt(name);
+  return origin && u.startsWith("/") ? origin + u : u;
+};
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const fmt = (s) => { s = Math.floor(s || 0); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); };
@@ -72,6 +81,39 @@ async function getJson(url) { // { data } or { fail: "what went wrong" }
     return { data: j };
   } catch (e) { return { fail: `${url}: ${(e && e.message) || "no connection"}` }; }
 }
+async function loadPeers(localIds) {
+  // Pull catalogues from peer instances (admin-configured). Songs stream from the peer origin.
+  let peers = [];
+  try {
+    const r = await fetch("/api/network/peers");
+    if (r.ok) peers = arr(await r.json());
+  } catch { return []; }
+  const remote = [];
+  await Promise.all(peers.map(async (peer) => {
+    if (!peer.url) return;
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 10000);
+      const r = await fetch(peer.url.replace(/\/$/, "") + "/api/tracks", { signal: ctrl.signal, headers: { accept: "application/json" } });
+      clearTimeout(timer);
+      if (!r.ok) return;
+      const list = arr(await r.json());
+      for (const t of list) {
+        if (!t || !t.id || localIds.has(t.id)) continue; // local wins on id collision
+        remote.push({
+          ...t,
+          origin: peer.url.replace(/\/$/, ""),
+          peer_name: peer.name || peer.url,
+          plays: t.plays || 0,
+          hearts: t.hearts || 0,
+          likes: t.likes || 0,
+          dislikes: t.dislikes || 0,
+        });
+      }
+    } catch { /* peer offline — skip silently */ }
+  }));
+  return remote;
+}
 async function load() {
   const steps = [
     ["/api/tracks", "Songs"],
@@ -92,6 +134,10 @@ async function load() {
   tracks = arr(t.data); playlists = arr(p.data);
   loadError = t.fail || p.fail || (t.data && !Array.isArray(t.data) ? "/api/tracks returned something unexpected" : "");
   if (s.data && typeof s.data.name === "string") { site = { ...s.data, ad: s.data.ad || { enabled: false, html: "", height: 340 } }; store.set("site", { name: site.name, title: site.title, favicon: site.favicon }); applySite(); }
+  paintBoot(90, "Network peers");
+  const localIds = new Set(tracks.map((x) => x.id));
+  const remote = await loadPeers(localIds);
+  if (remote.length) tracks = tracks.concat(remote);
   byId = Object.fromEntries(tracks.map((x) => [x.id, x]));
   paintBoot(100, "Songs, artists and playlists");
   render();
@@ -661,17 +707,26 @@ const shuffled = (a) => { a = [...a]; for (let i = a.length - 1; i > 0; i--) { c
 const cur = () => byId[audio.dataset.id];
 
 function startQueue(ids, id, label, pl, kind = "") { queue = [...ids]; qLabel = label; ctxPl = pl; shufKind = kind; play(id); }
+const mediaUrl = (t, path) => (t && t.origin ? t.origin : "") + path;
 function play(id) {
   const t = byId[id];
   if (!t) return;
   qi = queue.indexOf(id);
   if (qi < 0) { queue = [id]; qi = 0; }
   audio.dataset.id = id; counted = false; left = repeat ? repeat - 1 : 0;
-  audio.src = "/audio/" + id;
+  // Skip play-count for remote tracks (they live on another server)
+  if (t.origin) counted = true;
+  audio.src = mediaUrl(t, "/audio/" + id);
   audio.play().catch(() => {});
   $("#pc").innerHTML = art(albumArt(t), albumName(t) || t.title, "lg");
   $("#pt").textContent = t.title; $("#pa").textContent = artistLine(t) + (albumName(t) ? " · " + albumName(t) : "");
-  if ("mediaSession" in navigator) navigator.mediaSession.metadata = new MediaMetadata({ title: t.title, artist: artistLine(t), album: albumName(t), artwork: [{ src: new URL(albumArt(t), location.href).href }] });
+  if ("mediaSession" in navigator) {
+    const artSrc = albumArt(t);
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: t.title, artist: artistLine(t), album: albumName(t),
+      artwork: artSrc ? [{ src: artSrc.startsWith("http") ? artSrc : new URL(artSrc, location.href).href }] : [],
+    });
+  }
   paintReact(); paintShuffle(); markRows(); renderQueue();
   if (!$("#lyrics").classList.contains("hidden")) loadLyrics();
 }
@@ -727,17 +782,17 @@ function renderQueue() {
 
 // ---------- reactions ----------
 function paintReact() {
-  const t = cur(), m = (t && mine[t.id]) || {};
+  const t = cur(), remote = !!(t && t.origin), m = (t && !remote && mine[t.id]) || {};
   [["bh", "ch", "heart"], ["bl", "cl", "like"], ["bd", "cd", "dislike"]].forEach(([b, c, k]) => {
-    $("#" + b).disabled = !t;
+    $("#" + b).disabled = !t || remote;
     $("#" + b).classList.toggle("on", !!m[k]);
     $("#" + b).setAttribute("aria-pressed", !!m[k]);
     $("#" + c).textContent = t ? t[KEY[k]] : 0;
-    setTip("#" + b, { heart: ["Heart this song", "Remove heart"], like: ["Like", "Remove like"], dislike: ["Dislike", "Remove dislike"] }[k][m[k] ? 1 : 0]);
+    setTip("#" + b, remote ? "Reactions stay on the peer’s server" : { heart: ["Heart this song", "Remove heart"], like: ["Like", "Remove like"], dislike: ["Dislike", "Remove dislike"] }[k][m[k] ? 1 : 0]);
   });
 }
 async function react(kind) {
-  const t = cur(); if (!t) return;
+  const t = cur(); if (!t || t.origin) return; // remote tracks are reacted on their own server
   const m = (mine[t.id] ??= {}), on = !m[kind];
   const bump = (k, d) => (t[KEY[k]] = Math.max(0, t[KEY[k]] + d));
   m[kind] = on; bump(kind, on ? 1 : -1);

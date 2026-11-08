@@ -32,6 +32,27 @@ const json = (data, status = 200, headers = {}) =>
   });
 const clean = (v, max = 200) => String(v ?? "").trim().slice(0, max);
 
+// CORS for peer network: when sharing is on, public library endpoints are readable by other instances.
+const CORS_PEER = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "GET, HEAD, OPTIONS",
+  "access-control-allow-headers": "content-type, range, x-visitor",
+  "access-control-expose-headers": "content-range, content-length, accept-ranges, etag",
+  "access-control-max-age": "86400",
+};
+async function isSharing(DB) {
+  try {
+    const row = await DB.prepare("SELECT value FROM settings WHERE key = 'network_share'").first();
+    return row?.value === "1";
+  } catch { return false; }
+}
+function withCors(res, share) {
+  if (!share) return res;
+  const h = new Headers(res.headers);
+  for (const [k, v] of Object.entries(CORS_PEER)) h.set(k, v);
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers: h });
+}
+
 let ready;
 function init(env) {
   return (ready ??= (async () => {
@@ -57,6 +78,9 @@ function init(env) {
       `CREATE TABLE IF NOT EXISTS requests (
         id TEXT PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL, artist TEXT NOT NULL DEFAULT '', album TEXT NOT NULL DEFAULT '',
         image TEXT, url TEXT, dedupe TEXT NOT NULL UNIQUE, voter TEXT NOT NULL, ip TEXT NOT NULL, created_at INTEGER NOT NULL)`,
+      `CREATE TABLE IF NOT EXISTS peers (
+        id TEXT PRIMARY KEY, url TEXT NOT NULL UNIQUE, name TEXT NOT NULL DEFAULT '',
+        track_count INTEGER DEFAULT 0, last_ok INTEGER, last_error TEXT, added_at INTEGER NOT NULL)`,
     ];
     for (const sql of tables) {
       try { await q(sql).run(); } catch (e) { console.error("schema create failed:", e.message); }
@@ -722,6 +746,23 @@ async function api(req, env, url, ctx) {
   let x;
 
   // ---------- public ----------
+  // Peer discovery: other instances probe this to confirm sharing is on and get a friendly name.
+  if (path === "/api/peer" && m === "GET") {
+    if (!(await isSharing(DB))) return json({ error: "This library is not shared on the network." }, 403);
+    const site = await siteSettings(DB);
+    const { n } = await DB.prepare("SELECT COUNT(*) AS n FROM tracks").first();
+    return json({ ok: true, name: site.name, title: site.title || site.name, tracks: n || 0, version: 1 });
+  }
+  // List of peer base URLs this instance has added (so the front-end can pull their tracks).
+  if (path === "/api/network/peers" && m === "GET") {
+    const rows = (await DB.prepare("SELECT id, url, name, track_count, last_ok, last_error FROM peers ORDER BY added_at").all()).results;
+    return json(rows.map((p) => ({
+      id: p.id, url: p.url, name: p.name || p.url,
+      track_count: p.track_count || 0,
+      online: !!(p.last_ok && !p.last_error),
+      last_ok: p.last_ok || null,
+    })));
+  }
   if (path === "/api/tracks" && m === "GET") {
     const { results } = await DB.prepare(
       `SELECT ${TRACK_COLS} FROM tracks t LEFT JOIN reactions r ON r.track_id = t.id GROUP BY t.id ORDER BY t.created_at DESC`).all();
@@ -1128,6 +1169,89 @@ async function api(req, env, url, ctx) {
     ]);
     return json({ ok: true });
   }
+
+  // ---------- network (peer-to-peer library sharing) ----------
+  if (path === "/api/admin/network" && m === "GET") {
+    const share = await isSharing(DB);
+    const peers = (await DB.prepare("SELECT id, url, name, track_count, last_ok, last_error, added_at FROM peers ORDER BY added_at").all()).results;
+    return json({ share, peers });
+  }
+  if (path === "/api/admin/network" && m === "PUT") {
+    const b = await req.json().catch(() => ({}));
+    const on = !!b.share;
+    await DB.prepare("INSERT INTO settings (key, value) VALUES ('network_share', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+      .bind(on ? "1" : "0").run();
+    return json({ share: on });
+  }
+  if (path === "/api/admin/network/peers" && m === "POST") {
+    const b = await req.json().catch(() => ({}));
+    let raw = clean(b.url, 300);
+    if (!raw) return json({ error: "Paste a link to another music-app instance." }, 400);
+    // Accept with or without trailing slash / path
+    try {
+      const u = new URL(raw.startsWith("http") ? raw : "https://" + raw);
+      if (!/^https?:$/.test(u.protocol)) throw new Error("bad protocol");
+      raw = u.origin; // store origin only
+    } catch {
+      return json({ error: "That doesn't look like a valid URL." }, 400);
+    }
+    // Don't add ourselves
+    const self = new URL(req.url).origin;
+    if (raw === self) return json({ error: "That's this site. Add a different instance." }, 400);
+    const exists = await DB.prepare("SELECT id FROM peers WHERE url = ?").bind(raw).first();
+    if (exists) return json({ error: "That peer is already in the list." }, 409);
+
+    // Probe the peer
+    let peerInfo = null, err = null;
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 8000);
+      const r = await fetch(raw + "/api/peer", { signal: ctrl.signal, headers: { accept: "application/json", "user-agent": "music-app-peer" } });
+      clearTimeout(t);
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.ok) err = j.error || `Peer answered ${r.status}`;
+      else peerInfo = j;
+    } catch (e) {
+      err = e.name === "AbortError" ? "Timed out reaching the peer." : (e.message || "Could not reach the peer.");
+    }
+    if (err) return json({ error: err }, 502);
+
+    const id = crypto.randomUUID();
+    const now = Date.now();
+    await DB.prepare(
+      "INSERT INTO peers (id, url, name, track_count, last_ok, last_error, added_at) VALUES (?,?,?,?,?,?,?)")
+      .bind(id, raw, peerInfo.name || raw, peerInfo.tracks || 0, now, null, now).run();
+    return json({ id, url: raw, name: peerInfo.name || raw, track_count: peerInfo.tracks || 0, online: true, last_ok: now }, 201);
+  }
+  if ((x = path.match(/^\/api\/admin\/network\/peers\/([\w-]+)$/)) && m === "DELETE") {
+    await DB.prepare("DELETE FROM peers WHERE id = ?").bind(x[1]).run();
+    return json({ ok: true });
+  }
+  if ((x = path.match(/^\/api\/admin\/network\/peers\/([\w-]+)\/refresh$/)) && m === "POST") {
+    const peer = await DB.prepare("SELECT * FROM peers WHERE id = ?").bind(x[1]).first();
+    if (!peer) return json({ error: "Peer not found." }, 404);
+    let peerInfo = null, err = null;
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 8000);
+      const r = await fetch(peer.url + "/api/peer", { signal: ctrl.signal, headers: { accept: "application/json", "user-agent": "music-app-peer" } });
+      clearTimeout(t);
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.ok) err = j.error || `Peer answered ${r.status}`;
+      else peerInfo = j;
+    } catch (e) {
+      err = e.name === "AbortError" ? "Timed out reaching the peer." : (e.message || "Could not reach the peer.");
+    }
+    if (err) {
+      await DB.prepare("UPDATE peers SET last_error = ?, last_ok = last_ok WHERE id = ?").bind(err, peer.id).run();
+      return json({ error: err, online: false }, 502);
+    }
+    const now = Date.now();
+    await DB.prepare("UPDATE peers SET name = ?, track_count = ?, last_ok = ?, last_error = NULL WHERE id = ?")
+      .bind(peerInfo.name || peer.name, peerInfo.tracks || 0, now, peer.id).run();
+    return json({ id: peer.id, url: peer.url, name: peerInfo.name || peer.name, track_count: peerInfo.tracks || 0, online: true, last_ok: now });
+  }
+
   return json({ error: "Not found." }, 404);
 }
 
@@ -1142,10 +1266,21 @@ export default {
     if (env.LYRICSOVH_API) OVH = env.LYRICSOVH_API;
     try {
       await init(env);
-      if (url.pathname === "/site/favicon") return await serveFavicon(env);
-      if (url.pathname.startsWith("/audio/")) return await serveAudio(req, env, url.pathname.slice(7));
-      if (["/art/album", "/art/artist", "/art/track", "/art/playlist"].includes(url.pathname)) return await serveArt(env, url);
-      if (url.pathname.startsWith("/api/")) return await api(req, env, url, ctx);
+      const share = await isSharing(env.DB);
+      // Peer CORS preflight
+      if (req.method === "OPTIONS" && share) {
+        const peerPaths = url.pathname.startsWith("/api/") || url.pathname.startsWith("/audio/") || url.pathname.startsWith("/art/") || url.pathname === "/site/favicon";
+        if (peerPaths) return new Response(null, { status: 204, headers: CORS_PEER });
+      }
+      if (url.pathname === "/site/favicon") return withCors(await serveFavicon(env), share);
+      if (url.pathname.startsWith("/audio/")) return withCors(await serveAudio(req, env, url.pathname.slice(7)), share);
+      if (["/art/album", "/art/artist", "/art/track", "/art/playlist"].includes(url.pathname)) return withCors(await serveArt(env, url), share);
+      if (url.pathname.startsWith("/api/")) {
+        const res = await api(req, env, url, ctx);
+        // CORS only on public read endpoints (not admin)
+        const publicPeer = share && (url.pathname === "/api/tracks" || url.pathname === "/api/playlists" || url.pathname === "/api/site" || url.pathname === "/api/peer" || url.pathname === "/api/network/peers");
+        return withCors(res, publicPeer);
+      }
     } catch (e) {
       return json({ error: "Server error: " + e.message }, 500);
     }

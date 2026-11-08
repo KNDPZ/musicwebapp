@@ -155,6 +155,42 @@
       </div>
     </section>
 
+    <!-- Network (peer-to-peer) -->
+    <section class="pane hidden" id="s-network">
+      <h1>Network</h1>
+      <div class="card">
+        <h2>Share this library</h2>
+        <p class="muted" style="margin-top:0">When sharing is on, other music-app instances can add your link and stream songs from this library. Your files stay on this server; peers only read the catalogue and stream audio.</p>
+        <label class="check"><input type="checkbox" id="netShare"> Share this library on the network</label>
+        <div id="netShareBox" class="hidden" style="margin-top:14px">
+          <label class="muted" for="netLink">Your share link</label>
+          <div class="form" style="margin-top:6px">
+            <input id="netLink" type="text" readonly style="flex:1;min-width:200px" aria-label="Share link">
+            <button class="btn ghost" id="netCopy" type="button">Copy</button>
+          </div>
+          <p class="msg" id="netShareMsg" role="status"></p>
+        </div>
+      </div>
+      <div class="card">
+        <div class="form" style="justify-content:space-between;margin-bottom:12px">
+          <h2 style="margin:0">Connected peers</h2>
+          <button class="btn" id="netAddBtn" type="button">+ Add peer</button>
+        </div>
+        <p class="muted" style="margin-top:0">Paste a share link from another instance. When connected, its songs appear in this library for everyone (played from that server).</p>
+        <div id="netAddForm" class="hidden" style="margin-bottom:16px;padding:14px;border:1px solid var(--line2);border-radius:12px">
+          <label for="netPeerUrl" class="muted">Peer link</label>
+          <div class="form" style="margin-top:6px">
+            <input id="netPeerUrl" type="url" placeholder="https://other-music-app.example" style="flex:1;min-width:200px" maxlength="300">
+            <button class="btn" id="netConnect" type="button">Connect</button>
+            <button class="btn ghost" id="netAddCancel" type="button">Cancel</button>
+          </div>
+          <p class="msg" id="netAddMsg" role="status"></p>
+        </div>
+        <div id="netPeers" class="muted">No peers yet.</div>
+        <p class="msg" id="netMsg" role="status"></p>
+      </div>
+    </section>
+
     <!-- Danger -->
     <section class="pane hidden" id="s-danger">
       <h1>Danger</h1>
