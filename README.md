@@ -185,6 +185,33 @@ Portainer will build the image and start the container. The app listens on port 
 
 Map a host port if you want a different external port (edit the `ports` section in `docker-compose.yml` or override it in Portainer).
 
+### HTTPS (required for admin login away from localhost)
+
+The admin session cookie is marked `Secure`, so browsers only keep it over HTTPS (plain `http://localhost` is the one exception). If you open the app via a LAN IP or hostname over `http://`, the login "succeeds" but you stay logged out. Enable the built-in HTTPS proxy (Caddy):
+
+```bash
+docker compose --profile https up -d --build
+```
+
+Open **https://localhost:8443** (or `https://<server-ip>:8443`). In Portainer, add the environment variable `COMPOSE_PROFILES=https` to the stack instead.
+
+Settings (all optional – see `.env.example`):
+
+| Variable       | Default     | Meaning |
+|----------------|-------------|---------|
+| `HTTPS_PORT`   | `8443`      | Host port for HTTPS (use `443` for a public domain) |
+| `SITE_ADDRESS` | `localhost` | Name(s)/IP(s) you browse to, comma separated, e.g. `music.lan, 192.168.1.50` |
+| `TLS_ARGS`     | `internal`  | `internal` = self-signed; `you@example.com` = Let's Encrypt; `/certs/cert.pem /certs/key.pem` = your own certificate |
+| `CERT_DIR`     | named volume | Absolute host folder holding `cert.pem` + `key.pem` (own-certificate mode) |
+| `APP_BIND`     | `0.0.0.0`   | Set to `127.0.0.1` to hide the plain-HTTP port from the network |
+
+**Self-signed (default):** the browser shows a certificate warning until you trust Caddy's local CA. Export it with
+`docker cp music-app-https:/data/caddy/pki/authorities/local/root.crt .` and import it into your OS/browser trust store (or just accept the warning).
+
+**Let's Encrypt:** point a public DNS name at your server, forward port 443 to the host, then set `SITE_ADDRESS=music.example.com`, `TLS_ARGS=you@example.com`, `HTTPS_PORT=443`.
+
+Recommended with HTTPS: set `APP_BIND=127.0.0.1`. Login rate limiting then works per real client IP (the proxy passes it on) instead of treating everyone as one visitor.
+
 ### Data persistence
 
 | Path inside container          | Content                          | Docker volume      |

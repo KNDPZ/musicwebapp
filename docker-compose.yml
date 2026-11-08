@@ -1,11 +1,16 @@
 # Music app – run locally with Docker / Portainer
 #
+# Plain HTTP (login works on http://localhost only – the admin cookie is "Secure"):
+#   docker compose up -d --build
+#
+# HTTPS (needed to log in as admin from other devices / LAN IPs):
+#   docker compose --profile https up -d --build
+#   -> https://localhost:8443   (see .env.example and README for hostnames, Let's Encrypt, own certs)
+#
 # Portainer: Stacks → Add stack → Repository
 #   Repository URL: https://github.com/YOUR_USER/music-app
 #   Compose path:   docker-compose.yml
-#
-# Or from a clone:
-#   docker compose up -d
+#   For HTTPS add the environment variable  COMPOSE_PROFILES=https  (plus any from .env.example)
 
 services:
   music-app:
@@ -14,7 +19,8 @@ services:
     container_name: music-app
     restart: unless-stopped
     ports:
-      - "8787:8787"
+      # Set APP_BIND=127.0.0.1 when using HTTPS so only the proxy is reachable from the network
+      - "${APP_BIND:-0.0.0.0}:${APP_PORT:-8787}:8787"
     volumes:
       # Persist R2 (mp3s + artwork) and D1 (library, sessions, settings)
       - music-app-data:/app/.wrangler/state
@@ -23,6 +29,35 @@ services:
     # Optional: give the container more memory if you upload large libraries
     # mem_limit: 1g
 
+  # Optional HTTPS reverse proxy – only starts with:  --profile https  (or COMPOSE_PROFILES=https)
+  music-app-https:
+    profiles: ["https"]
+    build:
+      context: .
+      dockerfile: Dockerfile.caddy
+    image: music-app-https:local
+    container_name: music-app-https
+    restart: unless-stopped
+    depends_on:
+      - music-app
+    ports:
+      - "${HTTPS_PORT:-8443}:443"
+    environment:
+      - SITE_ADDRESS=${SITE_ADDRESS:-localhost}
+      - TLS_ARGS=${TLS_ARGS:-internal}
+    volumes:
+      - music-app-caddy-data:/data   # certificates + local CA (keep, so the CA stays the same)
+      - music-app-caddy-config:/config
+      # Only used with TLS_ARGS="/certs/cert.pem /certs/key.pem"
+      # CERT_DIR = absolute host folder (bind mount) or leave unset for an empty named volume
+      - ${CERT_DIR:-music-app-certs}:/certs:ro
+
 volumes:
   music-app-data:
     name: music-app-data
+  music-app-caddy-data:
+    name: music-app-caddy-data
+  music-app-caddy-config:
+    name: music-app-caddy-config
+  music-app-certs:
+    name: music-app-certs

@@ -1,0 +1,3 @@
+# Tiny wrapper so the Caddyfile is baked in (no bind mounts needed – works in Portainer repo stacks).
+FROM caddy:2-alpine
+COPY Caddyfile /etc/caddy/Caddyfile

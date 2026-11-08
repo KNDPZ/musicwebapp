@@ -1,0 +1,22 @@
+# HTTPS front door for the music app (used by the "https" compose profile).
+#
+# Configured entirely through environment variables (see .env.example):
+#   SITE_ADDRESS  hostname(s)/IP(s) you browse to, comma separated. Default: localhost
+#   TLS_ARGS      "internal"                      -> self-signed cert from Caddy's local CA (default)
+#                 "you@example.com"               -> real Let's Encrypt cert (public domain, port 443 reachable)
+#                 "/certs/cert.pem /certs/key.pem" -> your own certificate files
+{
+	# The container only listens on 443; the host port is mapped in docker-compose.yml,
+	# so automatic HTTP->HTTPS redirects would point at the wrong port.
+	auto_https disable_redirects
+}
+
+{$SITE_ADDRESS:localhost} {
+	tls {$TLS_ARGS:internal}
+
+	reverse_proxy music-app:8787 {
+		# The Worker rate-limits admin logins per client IP via this header.
+		header_up CF-Connecting-IP {remote_host}
+		flush_interval -1
+	}
+}

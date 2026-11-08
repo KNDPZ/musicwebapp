@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   // IMPORTANT: this name must match the Worker name in your Cloudflare Git build settings.
-  "name": "musicwebapp",
+  "name": "music-app",
   "main": "src/index.js",
   "compatibility_date": "2025-10-01",
   "assets": {

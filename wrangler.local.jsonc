@@ -1,0 +1,25 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "music-app",
+  "main": "src/index.js",
+  "compatibility_date": "2025-10-01",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*", "/audio/*", "/art/*", "/site/*"]
+  },
+  // Explicit names/IDs so local Miniflare can create stable D1 + R2 stores
+  "r2_buckets": [
+    {
+      "binding": "MUSIC",
+      "bucket_name": "music-app-local"
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "music-app-local",
+      "database_id": "00000000-0000-0000-0000-000000000001"
+    }
+  ]
+}
