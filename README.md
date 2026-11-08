@@ -201,6 +201,7 @@ Settings (all optional – see `.env.example`):
 |----------------|-------------|---------|
 | `HTTPS_PORT`   | `8443`      | Host port for HTTPS (use `443` for a public domain) |
 | `SITE_ADDRESS` | `localhost` | Name(s)/IP(s) you browse to, comma separated, e.g. `music.lan, 192.168.1.50` |
+| `DEFAULT_SNI`  | = `SITE_ADDRESS` | Only set if `SITE_ADDRESS` lists several names: the one to use when browsing by bare IP |
 | `TLS_ARGS`     | `internal`  | `internal` = self-signed; `you@example.com` = Let's Encrypt; `/certs/cert.pem /certs/key.pem` = your own certificate |
 | `CERT_DIR`     | named volume | Absolute host folder holding `cert.pem` + `key.pem` (own-certificate mode) |
 | `APP_BIND`     | `0.0.0.0`   | Set to `127.0.0.1` to hide the plain-HTTP port from the network |

@@ -44,6 +44,7 @@ services:
       - "${HTTPS_PORT:-8443}:443"
     environment:
       - SITE_ADDRESS=${SITE_ADDRESS:-localhost}
+      - DEFAULT_SNI=${DEFAULT_SNI:-${SITE_ADDRESS:-localhost}}
       - TLS_ARGS=${TLS_ARGS:-internal}
     volumes:
       - music-app-caddy-data:/data   # certificates + local CA (keep, so the CA stays the same)
