@@ -26,8 +26,17 @@ let view = { ids: [], label: "", pl: null }; // what the main area is showing (w
 let queue = [], qi = -1, qLabel = "", ctxPl = null; // what is playing, and the playlist it came from
 let repeat = store.get("rep", 0), left = 0, counted = false, shufKind = "";
 let mine = store.get("mine", {});
+// crypto.randomUUID() is only available in secure contexts (HTTPS / localhost).
+// Over plain HTTP on a public IP it throws and the boot screen never finishes.
+function makeId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+  });
+}
 let vid = store.get("vid", null);
-if (!vid) { vid = crypto.randomUUID(); store.set("vid", vid); }
+if (!vid) { vid = makeId(); store.set("vid", vid); }
 
 // ---------- site name, tab title, browser icon, front-page ad (set by the admin) ----------
 let site = { ...store.get("site", { name: "Music", title: "", favicon: 0 }), ad: { enabled: false, html: "", height: 340 } };
