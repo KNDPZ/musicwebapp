@@ -1,0 +1,28 @@
+# Music app – run locally with Docker / Portainer
+#
+# Portainer: Stacks → Add stack → Repository
+#   Repository URL: https://github.com/YOUR_USER/music-app
+#   Compose path:   docker-compose.yml
+#
+# Or from a clone:
+#   docker compose up -d
+
+services:
+  music-app:
+    build: .
+    image: music-app:local
+    container_name: music-app
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    volumes:
+      # Persist R2 (mp3s + artwork) and D1 (library, sessions, settings)
+      - music-app-data:/app/.wrangler/state
+    environment:
+      - NODE_ENV=production
+    # Optional: give the container more memory if you upload large libraries
+    # mem_limit: 1g
+
+volumes:
+  music-app-data:
+    name: music-app-data

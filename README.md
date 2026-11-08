@@ -147,3 +147,55 @@ npx wrangler dev
 
 - Uploads are limited to 100 MB per file. Login: 5 failed attempts per IP per 15 minutes.
 - A play counts after 10 seconds. Hearts/likes/dislikes are one per visitor per song (tracked by a random id in the browser).
+
+## Run with Docker / Portainer (local)
+
+This app is a Cloudflare Worker. The Docker image runs the same Worker code locally via Wrangler + Miniflare (local R2 + D1). Data is persisted in a Docker volume.
+
+### Quick start (CLI)
+
+```bash
+# from the repo root
+docker compose up -d --build
+```
+
+Open http://localhost:8787
+
+Default admin login (change it immediately):
+
+- ID: `admin`
+- Password: `21232f297a57a5a743894a0e4a801fc3`
+
+Stop / remove:
+
+```bash
+docker compose down          # keep data volume
+docker compose down -v       # also delete music library
+```
+
+### Portainer (Git deploy)
+
+1. Push this repository to GitHub (or any Git remote).
+2. In Portainer → **Stacks** → **Add stack** → **Repository**.
+3. Repository URL: `https://github.com/YOUR_USER/music-app` (or your fork).
+4. Compose path: `docker-compose.yml`
+5. Deploy the stack.
+
+Portainer will build the image and start the container. The app listens on port **8787**.
+
+Map a host port if you want a different external port (edit the `ports` section in `docker-compose.yml` or override it in Portainer).
+
+### Data persistence
+
+| Path inside container          | Content                          | Docker volume      |
+|--------------------------------|----------------------------------|--------------------|
+| `/app/.wrangler/state`         | Local R2 objects + D1 SQLite     | `music-app-data`   |
+
+Uploads, playlists, settings and sessions survive container restarts as long as the volume is kept.
+
+### Notes for Docker
+
+- This is a **local development / self-hosted** setup. It is not the Cloudflare production runtime.
+- Large libraries need enough disk space on the Docker host (mp3s live in the volume).
+- The first request creates the D1 tables automatically (same as on Cloudflare).
+- Network / peer-to-peer features work between instances that can reach each other over the network.

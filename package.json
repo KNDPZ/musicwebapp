@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "docker": "docker compose up -d --build"
   },
   "devDependencies": {
     "wrangler": "^4.50.0"
