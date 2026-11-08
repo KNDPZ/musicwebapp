@@ -1266,6 +1266,9 @@ export default {
     if (env.LYRICSOVH_API) OVH = env.LYRICSOVH_API;
     try {
       await init(env);
+      if (!env.DB || !env.MUSIC) {
+        return json({ error: "This Worker has no D1 database (DB) or R2 bucket (MUSIC) bound. Enable R2 on the account, then check the Git build log and the Worker bindings." }, 503);
+      }
       const share = await isSharing(env.DB);
       // Peer CORS preflight
       if (req.method === "OPTIONS" && share) {

@@ -74,12 +74,17 @@ document.addEventListener("error", (e) => { if (e.target.tagName === "IMG") e.ta
 let loadError = "";
 const arr = (x) => (Array.isArray(x) ? x : []);
 async function getJson(url) { // { data } or { fail: "what went wrong" }
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 20000);
   try {
-    const r = await fetch(url);
+    const r = await fetch(url, { signal: ctrl.signal });
     const j = await r.json().catch(() => undefined);
     if (!r.ok || j === undefined) return { fail: `${url} answered ${r.status}${j && j.error ? ": " + j.error : ""}` };
     return { data: j };
-  } catch (e) { return { fail: `${url}: ${(e && e.message) || "no connection"}` }; }
+  } catch (e) {
+    const timedOut = e && e.name === "AbortError";
+    return { fail: timedOut ? `${url} did not answer. The Worker is up, but D1 is not responding. In Cloudflare, open the Worker → Settings → Bindings and confirm DB (D1) and MUSIC (R2) are listed.` : `${url}: ${(e && e.message) || "no connection"}` };
+  } finally { clearTimeout(timer); }
 }
 async function loadPeers(localIds) {
   // Pull catalogues from peer instances (admin-configured). Songs stream from the peer origin.
@@ -115,6 +120,7 @@ async function loadPeers(localIds) {
   return remote;
 }
 async function load() {
+  try {
   const steps = [
     ["/api/tracks", "Songs"],
     ["/api/playlists", "Playlists"],
@@ -142,6 +148,12 @@ async function load() {
   paintBoot(100, "Songs, artists and playlists");
   render();
   hideBoot();
+  } catch (e) {
+    loadError = (e && e.message) || String(e);
+    const el = $("#list");
+    if (el) el.innerHTML = errorBox("This page couldn't be shown.", loadError);
+    hideBoot();
+  }
 }
 const errorBox = (text, detail) => `<div class="empty"><p>${esc(text)}</p>${detail ? `<details style="margin:12px 0"><summary style="justify-content:center;font-size:14px">Details</summary><p class="muted" style="word-break:break-word">${esc(detail)}</p></details>` : ""}<button class="btn" type="button" data-act="retry">Try again</button></div>`;
 
