@@ -424,7 +424,7 @@ const SAMPLE_AD = `<style>
     <p class="kicker">Request line open</p>
     <h2>You pick what plays next</h2>
     <p>Drop a track and it goes straight into the live queue — no algorithm, no gatekeepers.</p>
-    <a href="https://music.playy.online/#request/new" target="_top" data-cta="request">Request a track</a>
+    <a href="#request/new" target="_top" data-cta="request">Request a track</a>
   </div>
 
   <!-- 2 -->
@@ -432,7 +432,7 @@ const SAMPLE_AD = `<style>
     <p class="kicker">Live right now</p>
     <h2>See what's up next</h2>
     <p>Every track in the queue, who asked for it, and how long until it hits the speakers.</p>
-    <a href="https://music.playy.online/#request" target="_top" data-cta="queue">See the queue</a>
+    <a href="#request" target="_top" data-cta="queue">See the queue</a>
   </div>
 
   <!-- 3 — most hearted -->
@@ -440,7 +440,7 @@ const SAMPLE_AD = `<style>
     <p class="kicker">Most hearted this week</p>
     <h2>What the pit is loving</h2>
     <p><span class="count" data-fill="heart-count">The community</span> hearts and counting. See the tracks your fellow listeners can't stop hitting.</p>
-    <a href="https://music.playy.online/#hearts" target="_top" data-cta="hearts">See most hearted</a>
+    <a href="#hearts" target="_top" data-cta="hearts">See most hearted</a>
   </div>
 
   <!-- 4 — most liked -->
@@ -448,7 +448,7 @@ const SAMPLE_AD = `<style>
     <p class="kicker">Most liked this week</p>
     <h2>The crowd favourites</h2>
     <p>Ranked by real likes from real listeners — no editorial picks, no paid placement.</p>
-    <a href="https://music.playy.online/#likes" target="_top" data-cta="likes">See most liked</a>
+    <a href="#likes" target="_top" data-cta="likes">See most liked</a>
   </div>
 
   <!-- 5 — random play -->
@@ -456,7 +456,7 @@ const SAMPLE_AD = `<style>
     <p class="kicker">Can't decide?</p>
     <h2>Shuffle the pit</h2>
     <p>One tap drops a random track from the whole library into your player. No browsing, no picking.</p>
-    <a href="https://music.playy.online/#recent/songs" target="_top" data-random data-cta="random">Surprise me</a>
+    <a href="#recent/songs" target="_top" data-random data-cta="random">Surprise me</a>
   </div>
 
   <button class="nav prev" type="button" aria-label="Previous slide">‹</button>

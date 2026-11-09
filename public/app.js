@@ -7,7 +7,8 @@ const albumArt = (t) => {
 };
 const artistArt = (name, origin) => {
   const u = _artistArt(name);
-  return origin && u.startsWith("/") ? origin + u : u;
+  const peerOrigin = origin || (typeof tracks !== "undefined" && tracks.find(t=>t.origin && artistsOf(t).includes(name))?.origin);
+  return peerOrigin && u.startsWith("/") ? peerOrigin + u : u;
 };
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -18,10 +19,11 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
 const audio = $("#audio");
-const TABS = { recent: "Recently added", top: "Most listened", artists: "Artists", playlists: "Playlists", hearts: "Most hearted", likes: "Most liked", dislikes: "Most disliked", request: "Request" };
+const TABS = { recent: "Recently added", top: "Most listened", artists: "Artists", playlists: "Playlists", hearts: "Most hearted", likes: "Most liked", dislikes: "Most disliked", user: "My playlists", settings: "Account settings", request: "Request" };
 const KEY = { heart: "hearts", like: "likes", dislike: "dislikes" };
 
-let tracks = [], byId = {}, playlists = [], query = "";
+let tracks = [], byId = {}, playlists = [], userPublicPlaylists = [], peerPlaylists = [], query = "";
+let peerTrackLookup = new Map();
 let view = { ids: [], label: "", pl: null }; // what the main area is showing (what a click on a row plays)
 let queue = [], qi = -1, qLabel = "", ctxPl = null; // what is playing, and the playlist it came from
 let repeat = store.get("rep", 0), left = 0, counted = false, shufKind = "";
@@ -78,7 +80,20 @@ paintBoot(3, "Songs, artists and playlists");
 
 const art = (src, label, cls = "") =>
   `<span class="art ${cls}" data-i="${esc((label || "?").trim().charAt(0).toUpperCase())}">${src ? `<img loading="lazy" alt="" src="${esc(src)}">` : ""}</span>`;
-document.addEventListener("error", (e) => { if (e.target.tagName === "IMG") e.target.remove(); }, true);
+document.addEventListener("error", (e) => {
+  const img=e.target;if(img.tagName!=="IMG")return;
+  if(!img.dataset.fallback && img.src.includes("/art/album?")){
+    const src=new URL(img.src);const artist=src.searchParams.get("artist"),album=src.searchParams.get("album");
+    const candidate=tracks.find(t=>primaryArtist(t)===artist&&albumName(t)===album);
+    if(candidate){img.dataset.fallback="1";img.src=(candidate.origin||"")+"/art/track?id="+enc(candidate.id);return;}
+  }
+  if(!img.dataset.fallback && img.src.includes("/art/artist?")){
+    const src=new URL(img.src);const artist=src.searchParams.get("name");
+    const candidate=tracks.find(t=>artistsOf(t).includes(artist));
+    if(candidate){img.dataset.fallback="1";img.src=(candidate.origin||"")+"/art/track?id="+enc(candidate.id);return;}
+  }
+  img.remove();
+}, true);
 
 let loadError = "";
 const arr = (x) => (Array.isArray(x) ? x : []);
@@ -128,6 +143,28 @@ async function loadPeers(localIds) {
   }));
   return remote;
 }
+// Merge catalogue entries only when artist, title and duration agree. Preserve source alternatives.
+const normalizeRecording = s => String(s||"").normalize("NFKD").replace(/[\u0300-\u036f]/g,"").toLowerCase().replace(/[^a-z0-9]+/g," ").trim();
+function dedupeCatalogue(items) {
+  const groups = new Map(), output=[];
+  for (const t of items) {
+    const artist=normalizeRecording((t.artists&&t.artists[0])||t.artist), title=normalizeRecording(t.title);
+    const duration=Math.round(Number(t.duration)||0);
+    const version=/\b(live|remix|remaster|acoustic|instrumental|demo|edit)\b/i.test(t.title||"");
+    const key=artist && title && duration>0 && !version ? `${artist}|${title}|${Math.round(duration/3)}` : `unique:${t.origin||"local"}:${t.id}`;
+    const prior=groups.get(key);
+    if (!prior) { t.alternates=[]; groups.set(key,t); output.push(t); }
+    else {
+      // Prefer local sources; keep all alternative locations for future failover.
+      if (!prior.origin && t.origin) prior.alternates.push({origin:t.origin,id:t.id});
+      else if (prior.origin && !t.origin) {
+        t.alternates=[{origin:prior.origin,id:prior.id},...(prior.alternates||[])];
+        output[output.indexOf(prior)]=t; groups.set(key,t);
+      } else prior.alternates.push({origin:t.origin||null,id:t.id});
+    }
+  }
+  return output;
+}
 async function load() {
   try {
   const steps = [
@@ -147,13 +184,36 @@ async function load() {
   const [t, p, s, en] = results;
   entity = { artist: (en.data && en.data.artist) || {}, playlist: (en.data && en.data.playlist) || {} };
   tracks = arr(t.data); playlists = arr(p.data);
+  try {const r=await fetch("/api/user-playlists");if(r.ok)userPublicPlaylists=arr(await r.json());}catch{}
+  peerPlaylists=[];
   loadError = t.fail || p.fail || (t.data && !Array.isArray(t.data) ? "/api/tracks returned something unexpected" : "");
   if (s.data && typeof s.data.name === "string") { site = { ...s.data, ad: s.data.ad || { enabled: false, html: "", height: 340 } }; store.set("site", { name: site.name, title: site.title, favicon: site.favicon }); applySite(); }
   paintBoot(90, "Network peers");
   const localIds = new Set(tracks.map((x) => x.id));
   const remote = await loadPeers(localIds);
-  if (remote.length) tracks = tracks.concat(remote);
+  peerTrackLookup = new Map(remote.map(t=>[t.origin+"|"+t.id,t]));
+  try {
+    const peers=arr(await (await fetch("/api/network/peers")).json());
+    await Promise.all(peers.map(async peer=>{
+      try {
+        const origin=peer.url.replace(/\/$/,"");
+        const [a,b]=await Promise.allSettled([fetch(origin+"/api/playlists"),fetch(origin+"/api/user-playlists")]);
+        const system=a.status==="fulfilled"&&a.value.ok?arr(await a.value.json()):[];
+        const users=b.status==="fulfilled"&&b.value.ok?arr(await b.value.json()):[];
+        const lists=[...system.map(p=>({...p,kind:"server"})),...users.map(p=>({...p,kind:"user"}))];
+        peerPlaylists.push(...lists.map(p=>({...p,origin,id:origin+"|"+p.id,tracks:arr(p.tracks).map(id=>String(id).startsWith("peer:")?id:origin+"|"+id)})));
+      }catch{}
+    }));
+  }catch{}
+  if (remote.length) tracks = dedupeCatalogue(tracks.concat(remote));
+  else tracks = dedupeCatalogue(tracks);
   byId = Object.fromEntries(tracks.map((x) => [x.id, x]));
+  // Keep peer playlist tracks addressable even when catalogue deduplication hides them.
+  for(const [key,t] of peerTrackLookup) if(!byId[key]) byId[key]={...t,id:key,remote_id:t.id};
+  try {
+    const r=await fetch("/api/user/peer-tracks");
+    if(r.ok)for(const t of await r.json())if(!byId[t.id])byId[t.id]={...t,remote_id:t.remote_id,origin:t.origin,artists:[t.artist],cover_url:t.cover_url};
+  } catch {}
   paintBoot(100, "Songs, artists and playlists");
   render();
   hideBoot();
@@ -173,6 +233,7 @@ const SUBMAPS = {
   hearts: { items: { songs: "Songs", artists: "Artists", playlists: "Playlists" }, def: "songs" },
   likes: { items: { songs: "Songs", artists: "Artists", playlists: "Playlists" }, def: "songs" },
   dislikes: { items: { songs: "Songs", artists: "Artists", playlists: "Playlists" }, def: "songs" },
+  playlists: { items: { server: "Server playlists", peer: "Peer playlists", users: "Users playlists" }, def: "server" },
   request: { items: { queue: "Active queue", previous: "Previous requests", new: "Make a request" }, def: "queue" },
 };
 const LIMIT = { top: 100, hearts: 50, likes: 20, dislikes: 20 };
@@ -182,12 +243,12 @@ const dec = (s) => { try { return decodeURIComponent(s); } catch { return s; } }
 const enc = encodeURIComponent;
 const dict = () => Object.create(null);
 function parse() {
-  const raw = location.hash.slice(1) || "recent", i = raw.indexOf("/");
+  const raw = location.hash.slice(1) || "home", i = raw.indexOf("/");
   return { a: i < 0 ? raw : raw.slice(0, i), arg: i < 0 ? "" : raw.slice(i + 1) };
 }
 // Left menu is only the main sections. Sub tabs live in the sticky bar under search.
 function renderNav(tab) {
-  $("#nav").innerHTML = Object.entries(TABS).map(([k, v]) =>
+  $("#nav").innerHTML = Object.entries(TABS).filter(([k]) => !["user","settings"].includes(k) || currentAccount?.authenticated).map(([k, v]) =>
     `<a class="nav-item" href="#${k}"${k === tab ? ' aria-current="page"' : ""}>${v}</a>`).join("");
 }
 function renderSub(tab, sub) {
@@ -245,6 +306,32 @@ function render() {
 }
 function renderPage() {
   const { a, arg } = parse();
+  if (a === "user" || a === "settings") {
+    if(currentAccount?.role === "admin" && a === "settings"){location.replace("/admin.html#account");return;}
+    renderNav(a === "settings" ? "settings" : "user");renderSub("",null);
+    const section=a === "settings" ? "settings" : (arg||"private");
+    $("#subbar").hidden = false;$("#subbar").innerHTML = a === "settings" ? "" : `<a href="#user/private" ${section==="private"?'aria-current="page"':""}>Private playlists</a><a href="#user/public" ${section==="public"?'aria-current="page"':""}>Public playlists</a>`;
+    $("#list").innerHTML=`<h1>${a==="settings"?"Account settings":"My playlists"}</h1><div id="myLists">Loading…</div>`;
+    (async()=>{const me=await (await fetch("/api/me")).json();if(!me.authenticated){$("#myLists").textContent="Sign in to view your playlists.";return;}
+      if(section==="settings"){$("#myLists").innerHTML=`<div class="settings-panel"><p>Signed in as <strong>${esc(me.username)}</strong></p><h2>Change password</h2><form id="changePasswordForm" class="password-form"><label>Current password<input type="password" name="current" required autocomplete="current-password"></label><label>New password<input type="password" name="password" required minlength="8" autocomplete="new-password"></label><label>Confirm new password<input type="password" name="confirm" required minlength="8" autocomplete="new-password"></label><button class="btn" type="submit">Update password</button><p id="passwordFeedback" role="status"></p></form></div>`;$("#changePasswordForm").onsubmit=async e=>{e.preventDefault();const form=e.currentTarget;const b=Object.fromEntries(new FormData(form));const r=await postJSON("/api/user/password",b);const j=await r.json().catch(()=>({}));$("#passwordFeedback").textContent=r.ok?"Password changed successfully.":j.error||"Password change failed.";if(r.ok)form.reset();};return;}
+      const r=await fetch("/api/user/playlists");if(!r.ok){$("#myLists").textContent="Unable to load playlists.";return;}
+      const pls=(await r.json()).filter(p=>!!p.is_public===(section==="public"));
+      $("#myLists").innerHTML=pls.map(p=>`<a class="user-playlist-entry" href="#userplaylist/${enc(p.id)}">${esc(p.name)} · ${p.tracks.length} songs</a>`).join("")||"No playlists yet. Use + in the player to create one.";
+    })();return;
+  }
+  if(a==="userplaylist"){
+    renderNav("user");renderSub("",null);const el=$("#list");el.innerHTML="Loading playlist…";
+    (async()=>{const r=await fetch("/api/user/playlists");if(!r.ok){el.textContent="Sign in required.";return;}const ps=await r.json();const p=ps.find(x=>x.id===dec(arg));if(!p){el.textContent="Playlist not found.";return;}
+      const ids=(p.tracks||[]).map(ref=>typeof ref==="object"?(ref.ref||ref.track_id||ref.id):ref).filter(id=>byId[id]);
+      view={ids,label:p.name,pl:p.id};
+      el.innerHTML=`<a class="back" href="#user/${p.is_public?"public":"private"}">← My playlists</a><div class="owned-playlist-header">${playlistHero(p,ids,p.is_public?"Public playlist":"Private playlist")}<button type="button" class="playlist-cog" id="playlistCog" aria-label="Edit playlist settings" title="Edit playlist" aria-expanded="false">⚙</button></div><section id="playlistEditPanel" class="playlist-edit card hidden"><h2>Edit playlist</h2><label>Name<input id="editPlaylistName" maxlength="80" value="${esc(p.name)}"></label><label class="playlist-check"><input type="checkbox" id="editPlaylistPublic" ${p.is_public?"checked":""}> Public playlist</label><label>Cover image<input type="file" id="editPlaylistCover" accept="image/jpeg,image/png,image/webp"></label><div class="playlist-edit-actions"><button class="btn" id="savePlaylist">Save changes</button><button class="btn ghost" id="cancelPlaylistEdit">Cancel</button></div><p id="editPlaylistMsg" role="status"></p></section><div class="playlist-track-list">${ids.map((id,i)=>row(byId[id],i+1)).join("")||empty("No playable tracks yet. Add a song using + in the player.")}</div>`;
+      el.querySelector(".playlist-copy")?.remove();el.querySelector(".playlist-heart")?.remove();
+      const editPanel=el.querySelector("#playlistEditPanel"),cog=el.querySelector("#playlistCog");
+      cog.onclick=()=>{const opening=editPanel.classList.contains("hidden");editPanel.classList.toggle("hidden",!opening);cog.setAttribute("aria-expanded",String(opening));};
+      el.querySelector("#cancelPlaylistEdit").onclick=()=>{editPanel.classList.add("hidden");cog.setAttribute("aria-expanded","false");};
+      el.querySelector("#savePlaylist").onclick=async()=>{const name=el.querySelector("#editPlaylistName").value.trim();const pub=el.querySelector("#editPlaylistPublic").checked;const msg=el.querySelector("#editPlaylistMsg");if(!name){msg.textContent="Enter a playlist name.";return;}const r=await fetch(`/api/user/playlists/${enc(p.id)}`,{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({name,is_public:pub})});if(!r.ok){msg.textContent=(await r.json().catch(()=>({}))).error||"Could not save";return;}const file=el.querySelector("#editPlaylistCover").files[0];if(file){const cr=await fetch(`/api/user/playlists/${enc(p.id)}/cover`,{method:"PUT",headers:{"content-type":file.type},body:file});if(!cr.ok){msg.textContent="Saved settings but cover upload failed.";return;}}render();};
+    })();return;
+  }
   if (a === "home") { renderNav(""); renderSub("", null); landing($("#list")); markRows(); return; }
   const tab = a === "artist" || a === "similar" ? "artists" : a === "playlist" ? "playlists" : a === "album" ? "recent" : has(TABS, a) ? a : "recent";
   const sm = SUBMAPS[tab];
@@ -266,7 +353,13 @@ function renderPage() {
     else songList(el);
   }
   else if (tab === "artists") artistGrid(el, false);
-  else if (tab === "playlists") playlistGrid(el, false);
+  else if (tab === "playlists") {
+    if(sub==="users") {
+      noView();el.innerHTML=userPublicPlaylists.length?`<div class="grid s">${userPublicPlaylists.filter(p=>!query||p.name.toLowerCase().includes(query)).map(p=>playlistTile(p,`by ${p.username}`)).join("")}</div>`:empty("No public user playlists yet.");
+    }else if(sub==="peer") {
+      noView();el.innerHTML=peerPlaylists.length?`<div class="grid s">${peerPlaylists.filter(p=>!query||p.name.toLowerCase().includes(query)).map(p=>playlistTile(p,`from ${new URL(p.origin).hostname}`)).join("")}</div>`:empty("No peer playlists yet.");
+    }else playlistGrid(el,false);
+  }
   else if (RX.includes(tab) && sub === "artists") reactedArtists(el, tab);
   else if (RX.includes(tab) && sub === "playlists") reactedPlaylists(el, tab);
   else listView(el, tab);
@@ -317,7 +410,7 @@ function landing(el) {
     plays: (p.tracks || []).reduce((n, id) => n + ((byId[id] && byId[id].plays) || 0), 0),
   })), (p) => p.created, (p) => p.plays);
   const ad = query ? "" : adSlot();
-  const row = (title, inner) => `<section class="hsec"><h2>${title}</h2><div class="hrow">${inner}</div></section>`;
+  const row = (title, inner) => `<section class="hsec"><h2>${title}</h2><div class="hscroll"><button class="hnav hnav-left" data-scroll="-1" aria-label="Scroll ${title} left">‹</button><div class="hrow">${inner}</div><button class="hnav hnav-right" data-scroll="1" aria-label="Scroll ${title} right">›</button></div></section>`;
   el.innerHTML =
     (ad ? `<div class="home-ad">${ad}</div>` : "")
     + row("Artists", artists.map((a) => `<a class="tile" href="#artist/${enc(a.name)}">${art(artistArt(a.name), a.name)}<b>${esc(a.name)}</b><span class="muted">${plural(a.songs, "song")}</span></a>`).join("") + moreTile("#artists", "All artists"))
@@ -408,7 +501,7 @@ function artistPage(el, name) {
   const body = names.map((g) => {
     const l = groups[g].sort(byTrack);
     l.forEach((t) => ids.push(t.id));
-    return `<section><h2 class="sec">${art(albumArt(l[0]), g || "S")}${esc(g || "Singles")} <span class="muted" style="font-size:14px;font-weight:400">${plural(l.length, "song")}</span></h2>${l.map((t, i) => row(t, g ? numLabel(t, i, l) : i + 1)).join("")}</section>`;
+    return `<section><h2 class="sec">${art(albumArt(l[0]), g || "S")}${esc(g || "Singles")} <span class="muted" style="font-size:14px;font-weight:400">${plural(l.length, "song")}</span><button class="album-add" data-album-ids="${esc(l.map(t=>t.id).join(","))}" title="Add entire album to playlist" hidden>＋</button></h2>${l.map((t, i) => row(t, g ? numLabel(t, i, l) : i + 1)).join("")}</section>`;
   }).join("");
   view = { ids, label: name, pl: null };
   const albums = names.filter((g) => g).length;
@@ -532,7 +625,7 @@ window.addEventListener("message", (e) => { // the slider (a sandboxed frame) as
 
 // Playlist cover: your own image, else 9 different album covers (9+ albums) or a 4-cover grid.
 function mosaic(p) {
-  if (p.cover_v) return art(`/art/playlist?id=${enc(p.id)}&v=${p.cover_v}`, p.name);
+  if (p.cover_v) return art(`${p.origin||""}/art/playlist?id=${enc(p.id.split("|").pop())}&v=${p.cover_v}`, p.name);
   const seen = new Set(), urls = [];
   for (const id of p.tracks) {
     const t = byId[id]; if (!t) continue;
@@ -576,13 +669,27 @@ function reactedPlaylists(el, tab) {
     : empty("Nothing here yet. Playlists show up once someone reacts to them on their page.");
 }
 
+function playlistHero(p,ids,subtitle){
+ const src=p.cover_url ? (p.origin && p.cover_url.startsWith("/") ? p.origin+p.cover_url : p.cover_url) : (p.image || "");
+ const cover=src?`<img class="playlist-cover" src="${esc(src)}" alt="${esc(p.name)} cover" onerror="this.style.visibility='hidden'">`:mosaic(p);
+ return `<div class="playlist-detail-hero"><div class="playlist-detail-cover">${cover}</div><h1>${esc(p.name)}</h1><p class="muted">${esc(subtitle)}</p><div class="playlist-detail-actions"><button class="btn ghost playlist-heart" data-heart-playlist="${esc(p.id)}" title="Heart this playlist" aria-label="Heart playlist">♡ Heart</button><button class="btn playlist-copy" data-copy-playlist="${esc(p.id)}" title="Copy playlist to your account" aria-label="Copy playlist">＋ Copy to my playlists</button></div></div>`;
+}
 function playlistPage(el, id) {
+  const remote=peerPlaylists.find(p=>p.id===id);
+  const user=userPublicPlaylists.find(p=>p.id===id);
+  if(remote||user){
+    const p=remote||user;
+    const ids=p.tracks.map(i=>{if(!remote)return i;const raw=String(i);if(raw.startsWith("peer:"))return raw;const remoteId=raw.startsWith(p.origin+"|")?raw.slice(p.origin.length+1):raw;return byId[p.origin+"|"+remoteId]?p.origin+"|"+remoteId:remoteId;}).filter(i=>byId[i]);
+    noView();
+    el.innerHTML=`<a class="back" href="#playlists/${remote?"peer":"users"}">← Playlists</a>${playlistHero(p,ids,remote?"Peer playlist":"Public user playlist")}${ids.map((i,n)=>row(byId[i],n+1)).join("")||empty("Songs are not available from this server.")}`;
+    view={ids,label:p.name,pl:p};return;
+  }
   const p = playlists.find((x) => x.id === id);
   if (!p) { el.innerHTML = `<a class="back" href="#playlists">← All playlists</a>` + empty("Playlist not found."); noView(); return; }
   const l = p.tracks.map((i) => byId[i]).filter(Boolean);
   view = { ids: l.map((t) => t.id), label: `Playlist “${p.name}”`, pl: p.id };
   el.innerHTML = `<a class="back" href="#playlists">← All playlists</a>
-    <div class="hero">${mosaic(p)}<div><h1>${esc(p.name)}</h1><span class="muted">${plural(l.length, "song")}</span>${actions(false, { type: "playlist", key: p.id })}</div></div>
+    ${playlistHero(p,l.map(t=>t.id),plural(l.length,"song"))}
     ${l.map((t, i) => row(t, i + 1, "", true)).join("")}`;
 }
 
@@ -737,7 +844,7 @@ function play(id) {
   audio.dataset.id = id; counted = false; left = repeat ? repeat - 1 : 0;
   // Skip play-count for remote tracks (they live on another server)
   if (t.origin) counted = true;
-  audio.src = mediaUrl(t, "/audio/" + id);
+  audio.src = mediaUrl(t, "/audio/" + enc(t.remote_id || (t.origin && String(id).startsWith(t.origin+"|") ? String(id).slice(t.origin.length+1) : id)));
   audio.play().catch(() => {});
   $("#pc").innerHTML = art(albumArt(t), albumName(t) || t.title, "lg");
   $("#pt").textContent = t.title; $("#pa").textContent = artistLine(t) + (albumName(t) ? " · " + albumName(t) : "");
@@ -929,7 +1036,7 @@ async function loadLyrics() {
   body.innerHTML = `<p class="muted">Looking for lyrics…</p>`;
   let d = lyrCache.get(t.id);
   if (d === undefined) {
-    try { const r = await fetch("/api/lyrics?id=" + enc(t.id)); d = r.ok ? await r.json() : r.status === 404 ? null : undefined; } catch { d = undefined; }
+    try { const r = await fetch(t.origin ? "/api/lyrics?title="+enc(t.title)+"&artist="+enc(primaryArtist(t))+"&album="+enc(albumName(t))+"&duration="+enc(t.duration||0) : "/api/lyrics?id=" + enc(t.id)); d = r.ok ? await r.json() : r.status === 404 ? null : undefined; } catch { d = undefined; }
     if (d !== undefined) lyrCache.set(t.id, d);
   }
   if (lyr.id !== (cur() || {}).id) return; // the song changed while we were waiting
@@ -987,6 +1094,7 @@ $("#brand").addEventListener("click", (e) => {
 
 // ---------- admin gear + login dialog ----------
 $("#gear").addEventListener("click", async () => {
+  if (currentAccount?.authenticated && currentAccount.role === "user") return;
   try { if ((await (await fetch("/api/me")).json()).admin) { location.href = "/admin.html"; return; } } catch {}
   $("#dlg").showModal(); $("#lid").focus();
 });
@@ -994,8 +1102,73 @@ $("#lcancel").addEventListener("click", () => $("#dlg").close());
 $("#loginForm").addEventListener("submit", async (e) => {
   e.preventDefault();
   const r = await fetch("/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: $("#lid").value, password: $("#lpw").value }) });
-  if (r.ok) location.href = "/admin.html"; else $("#lerr").textContent = (await r.json()).error;
+  if (r.ok) { const me=await r.json(); $("#dlg").close(); $("#lpw").value=""; $("#lerr").textContent=""; await refreshAccount(); if(me.role === "admin")location.href="/admin.html";else {location.hash="#user/private";render();} } else $("#lerr").textContent = (await r.json()).error;
 });
+
+
+// User playlists, including remote tracks. All actions are explicitly initiated by the signed-in user.
+let currentAccount=null;
+async function refreshAccount(){
+  try {const r=await fetch("/api/me");currentAccount=await r.json();}catch{currentAccount=null;}
+  $("#whoami").textContent=currentAccount?.authenticated?currentAccount.username:"";
+  $("#accountMenu").classList.toggle("signed-in",!!currentAccount?.authenticated);
+  if(!currentAccount?.authenticated)$("#accountDrop").classList.add("hidden");
+  $("#playlistAdd").hidden=!currentAccount?.authenticated || currentAccount.role!=="user";
+  document.querySelectorAll(".album-add").forEach(b=>b.hidden=currentAccount?.role!=="user");
+}
+const postJSON=(url,body)=>fetch(url,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
+async function openPlaylistAdd(ids){
+  if(currentAccount?.role!=="user")return;
+  const d=$("#playlistDialog"), list=$("#playlistOptions");
+  d.dataset.ids=ids.join(",");
+  const r=await fetch("/api/user/playlists");
+  if(!r.ok){alert("Please sign in again.");return;}
+  const ps=await r.json();
+  list.innerHTML=ps.length?ps.map(p=>`<option value="${esc(p.id)}">${esc(p.name)} (${p.is_public?"public":"private"})</option>`).join(""):`<option value="">Create a playlist first</option>`;
+  $("#playlistMessage").textContent="";
+  d.showModal();
+}
+async function addToPlaylist(id,ids){
+  for(const tid of ids){
+    const t=byId[tid];if(!t)continue;
+    let ref=tid;
+    if(t.origin){const r=await postJSON("/api/peer-track-ref",{origin:t.origin,id:t.remote_id || (t.origin && String(t.id).startsWith(t.origin+"|") ? String(t.id).slice(t.origin.length+1) : t.id),title:t.title,artist:primaryArtist(t),album:albumName(t),duration:t.duration,cover_url:t.cover_url || ""});const j=await r.json();if(!r.ok)throw Error(j.error||"Peer unavailable");ref=j.ref;}
+    const r=await postJSON(`/api/user/playlists/${enc(id)}/tracks`,{track_id:ref});
+    if(!r.ok)throw Error((await r.json()).error||"Could not add track");
+  }
+}
+$("#playlistAdd").addEventListener("click",()=>{const t=cur();if(t)openPlaylistAdd([t.id]);});
+document.addEventListener("click",async e=>{
+  const heart=e.target.closest("[data-heart-playlist]");if(heart){const id=heart.dataset.heartPlaylist;const r=await postJSON("/api/playlist-heart",{id});const j=await r.json().catch(()=>({}));if(r.ok)heart.textContent=`♥ ${j.hearts} hearts`;else alert(j.error||"Could not heart playlist");return;}
+  const copy=e.target.closest("[data-copy-playlist]");if(copy){if(currentAccount?.role!=="user"){alert("Sign in with a user account to copy playlists.");return;}const id=copy.dataset.copyPlaylist;const p=[...playlists,...peerPlaylists,...userPublicPlaylists].find(x=>x.id===id);if(!p)return;const name=prompt("Name for your copy",p.name+" (copy)");if(!name?.trim())return;copy.disabled=true;try{const refs=[];for(const tid of p.tracks){const t=byId[tid] || peerTrackLookup.get(tid);if(t?.origin){const remoteId=t.remote_id || (String(t.id).startsWith(t.origin+"|")?String(t.id).slice(t.origin.length+1):t.id);const r=await postJSON("/api/peer-track-ref",{origin:t.origin,id:remoteId,title:t.title,artist:primaryArtist(t),album:albumName(t),duration:t.duration,cover_url:t.cover_url||""});if(!r.ok)throw Error("Could not cache peer track: "+(t.title||remoteId));refs.push((await r.json()).ref);}else if(tid && byId[tid])refs.push(tid);else throw Error("Playlist track not available: "+tid);}const cover_url=p.cover_url || p.image || "";const r=await postJSON("/api/user/playlists/copy",{name:name.trim(),tracks:refs,source_origin:p.origin||"",source_playlist_id:p.origin?"":p.id,cover_url});const j=await r.json();if(!r.ok)throw Error(j.error||"Copy failed");if(j.skipped)alert(j.skipped+" tracks could not be copied.");location.hash="#userplaylist/"+enc(j.id);}catch(err){alert(err.message);}finally{copy.disabled=false;}return;}
+  const b=e.target.closest(".album-add");if(b)openPlaylistAdd(b.dataset.albumIds.split(","));
+  const arrow=e.target.closest(".hnav");if(arrow){const sc=arrow.closest(".hsec")?.querySelector(".hrow");sc?.scrollBy({left:Number(arrow.dataset.scroll)*Math.max(240,sc.clientWidth*.8),behavior:"smooth"});}
+});
+$("#playlistCancel").onclick=()=>$("#playlistDialog").close();
+$("#playlistSave").onclick=async()=>{
+ const b=$("#playlistSave"), ids=$("#playlistDialog").dataset.ids.split(",");b.disabled=true;
+ try{
+  let id=$("#playlistOptions").value;
+  const name=$("#newPlaylistName").value.trim();
+  if(name){const r=await postJSON("/api/user/playlists",{name,is_public:$("#newPlaylistPublic").checked});const j=await r.json();if(!r.ok)throw Error(j.error);id=j.id;}
+  if(!id)throw Error("Choose or create a playlist.");
+  await addToPlaylist(id,ids);$("#playlistDialog").close();$("#newPlaylistName").value="";
+ }catch(e){$("#playlistMessage").textContent=e.message;}finally{b.disabled=false;}
+};
+$("#lregister").onclick=()=>{$("#dlg").close();$("#registerDlg").showModal();};
+$("#regCancel").onclick=()=>$("#registerDlg").close();
+$("#registerForm").onsubmit=async e=>{
+ e.preventDefault();const r=await postJSON("/api/register",{username:$("#regUser").value,password:$("#regPw").value,confirm:$("#regPw2").value});const j=await r.json();
+ if(!r.ok){$("#regErr").textContent=j.error;return;}
+ $("#registerDlg").close();$("#dlg").showModal();$("#lid").value=$("#regUser").value;
+};
+$("#accountMenu").addEventListener("mouseenter",()=>{if(currentAccount?.authenticated)$("#accountDrop").classList.remove("hidden");});
+$("#accountMenu").addEventListener("mouseleave",()=>$("#accountDrop").classList.add("hidden"));
+$("#gear").addEventListener("click",e=>{if(currentAccount?.authenticated){e.stopPropagation();$("#accountDrop").classList.toggle("hidden");}});
+document.addEventListener("click",e=>{if(!e.target.closest("#accountMenu"))$("#accountDrop").classList.add("hidden");});
+$("#userLogout").onclick=async()=>{await fetch("/api/logout",{method:"POST"});location.href="/#home";location.reload();};
+window.addEventListener("hashchange",()=>{refreshAccount();});
+refreshAccount();
 
 paintRepeat(); paintVol(); paintReact(); paintShuffle(); renderQueue();
 load();

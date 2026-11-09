@@ -62,7 +62,12 @@ function init(env) {
     // entire site down. Individual try/catch keeps the site up even if one step fails.
     const tables = [
       "CREATE TABLE IF NOT EXISTS admin (id TEXT PRIMARY KEY, salt TEXT NOT NULL, hash TEXT NOT NULL)",
-      "CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, expires INTEGER NOT NULL)",
+       "CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, expires INTEGER NOT NULL)",
+      "CREATE TABLE IF NOT EXISTS user_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL COLLATE NOCASE UNIQUE, salt TEXT NOT NULL, hash TEXT NOT NULL, created_at INTEGER NOT NULL)",
+      "CREATE TABLE IF NOT EXISTS user_playlists (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL, is_public INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, UNIQUE(user_id, name))",
+      "CREATE TABLE IF NOT EXISTS user_playlist_tracks (playlist_id TEXT NOT NULL, track_id TEXT NOT NULL, added_at INTEGER NOT NULL, PRIMARY KEY (playlist_id, track_id))",
+      "CREATE TABLE IF NOT EXISTS playlist_hearts (playlist_id TEXT NOT NULL, voter TEXT NOT NULL, PRIMARY KEY (playlist_id, voter))",
+      "CREATE TABLE IF NOT EXISTS peer_track_refs (ref TEXT PRIMARY KEY, origin TEXT NOT NULL, remote_id TEXT NOT NULL, title TEXT, artist TEXT, album TEXT, duration REAL)",
       "CREATE TABLE IF NOT EXISTS attempts (ip TEXT NOT NULL, ts INTEGER NOT NULL)",
       `CREATE TABLE IF NOT EXISTS tracks (
         id TEXT PRIMARY KEY, title TEXT NOT NULL, artist TEXT NOT NULL, album TEXT NOT NULL,
@@ -92,10 +97,15 @@ function init(env) {
     try { await q("ALTER TABLE tracks ADD COLUMN hash TEXT").run(); } catch {}
     try { await q("ALTER TABLE tracks ADD COLUMN artists TEXT").run(); } catch {}
     try { await q("ALTER TABLE playlists ADD COLUMN cover_v INTEGER NOT NULL DEFAULT 0").run(); } catch {}
+    try { await q("ALTER TABLE user_playlists ADD COLUMN cover_v INTEGER NOT NULL DEFAULT 0").run(); } catch {}
+    try { await q("ALTER TABLE peer_track_refs ADD COLUMN cover_url TEXT").run(); } catch {}
     for (const col of ["status TEXT NOT NULL DEFAULT 'active'", "done_at INTEGER", "meta TEXT", "playlist_id TEXT"])
       try { await q(`ALTER TABLE requests ADD COLUMN ${col}`).run(); } catch {}
     for (const col of ["kind TEXT", "members TEXT"])
       try { await q(`ALTER TABLE artist_info ADD COLUMN ${col}`).run(); } catch {}
+    try { await q("ALTER TABLE sessions ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'").run(); } catch {}
+    try { await q("ALTER TABLE sessions ADD COLUMN user_id TEXT").run(); } catch {}
+    try { await q("INSERT OR IGNORE INTO settings (key, value) VALUES ('admin_username', 'admin')").run(); } catch {}
     // Unique index on hash: fails if the library already has duplicate file hashes.
     // Do not take the site down for that; upload logic still dedupes by checking the column.
     try { await q("CREATE UNIQUE INDEX IF NOT EXISTS idx_tracks_hash ON tracks(hash)").run(); } catch (e) {
@@ -116,7 +126,12 @@ async function session(req, env) {
   const row = await env.DB.prepare("SELECT token FROM sessions WHERE token = ? AND expires > ?").bind(h, Date.now()).first();
   return row ? h : null;
 }
-const cookie = (v, age) => `sid=${v}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=${age}`;
+async function sessionInfo(req, env) {
+  const token = await session(req, env);
+  if (!token) return null;
+  return await env.DB.prepare("SELECT token, role, user_id FROM sessions WHERE token = ? AND expires > ?").bind(token, Date.now()).first();
+}
+const cookie = (v, age, secure = true) => `sid=${v}; HttpOnly; ${secure ? "Secure; " : ""}SameSite=Lax; Path=/; Max-Age=${age}`;
 
 async function serveAudio(req, env, id) {
   const rangeHeader = req.headers.get("range");
@@ -763,6 +778,20 @@ async function api(req, env, url, ctx) {
       last_ok: p.last_ok || null,
     })));
   }
+  // Local-only scanner authentication. This secret is never configured on the production Worker.
+  if (path === "/api/internal/folder-index" && m === "POST") {
+    if (!env.SCANNER_SECRET || req.headers.get("x-scanner-secret") !== env.SCANNER_SECRET) return json({error:"Forbidden"},403);
+    const body = await req.json().catch(() => ({}));
+    if (!Array.isArray(body.tracks) || body.tracks.length > 5000) return json({error:"Invalid scan"},400);
+    for (const t of body.tracks) {
+      if (!/^folder-[a-f0-9]{40}$/.test(t.id)) continue;
+      await DB.prepare("INSERT OR IGNORE INTO tracks (id,title,artist,album,track_no,duration,size,plays,created_at,hash) VALUES (?,?,?,?,?,?,?,0,?,NULL)")
+        .bind(t.id,clean(t.title,200)||"Unknown Track",clean(t.artist,200)||"Unknown Artist",clean(t.album,200)||"Unknown Album",Number(t.track_no)||0,Number(t.duration)||0,Number(t.size)||0,Date.now()).run();
+      await DB.prepare("UPDATE tracks SET title=?,artist=?,album=?,track_no=?,duration=?,size=? WHERE id=?")
+        .bind(clean(t.title,200)||"Unknown Track",clean(t.artist,200)||"Unknown Artist",clean(t.album,200)||"Unknown Album",Number(t.track_no)||0,Number(t.duration)||0,Number(t.size)||0,t.id).run();
+    }
+    return json({ok:true,indexed:body.tracks.length});
+  }
   if (path === "/api/tracks" && m === "GET") {
     const { results } = await DB.prepare(
       `SELECT ${TRACK_COLS} FROM tracks t LEFT JOIN reactions r ON r.track_id = t.id GROUP BY t.id ORDER BY t.created_at DESC`).all();
@@ -777,6 +806,39 @@ async function api(req, env, url, ctx) {
       upd[l.playlist_id] = Math.max(upd[l.playlist_id] || 0, l.added_at);
     });
     return json(pls.map((p) => ({ ...p, updated_at: Math.max(p.created_at, upd[p.id] || 0), tracks: by[p.id] || [] })));
+  }
+  if (path === "/api/user/peer-tracks" && m === "GET") {
+    const auth = await sessionInfo(req, env);
+    if (!auth || auth.role !== "user") return json({error:"Sign in required."},401);
+    const {results} = await DB.prepare("SELECT DISTINCT r.ref AS id, r.origin, r.remote_id, r.title, r.artist, r.album, r.duration, r.cover_url FROM peer_track_refs r JOIN user_playlist_tracks l ON l.track_id = r.ref JOIN user_playlists p ON p.id = l.playlist_id WHERE p.user_id = ?").bind(auth.user_id).all();
+    return json(results);
+  }
+  if (path === "/api/peer-track-ref" && m === "POST") {
+    const auth = await sessionInfo(req, env);
+    if (!auth || auth.role !== "user") return json({error:"Sign in required."},401);
+    const b = await req.json().catch(() => ({}));
+    const origin = clean(b.origin, 250).replace(/\/$/, ""), remoteId = clean(b.id, 100);
+    const peer = await DB.prepare("SELECT url FROM peers WHERE url = ?").bind(origin).first();
+    if (!peer || !/^[\w-]{1,100}$/.test(remoteId)) return json({error:"Unknown peer or track."},400);
+    const ref = "peer:" + await sha256(origin + "\n" + remoteId);
+    const cover = clean(b.cover_url,500);
+    await DB.prepare("INSERT OR IGNORE INTO peer_track_refs (ref,origin,remote_id,title,artist,album,duration,cover_url) VALUES (?,?,?,?,?,?,?,?)")
+      .bind(ref,origin,remoteId,clean(b.title),clean(b.artist),clean(b.album),Number(b.duration)||0,cover).run();
+    return json({ref});
+  }
+  if (path === "/api/user-playlists" && m === "GET") {
+    const { results } = await DB.prepare("SELECT p.id, p.name, p.user_id, u.username, p.created_at, p.is_public, p.cover_v FROM user_playlists p JOIN user_accounts u ON u.id = p.user_id WHERE p.is_public = 1 ORDER BY p.created_at DESC").all();
+    const links = (await DB.prepare("SELECT playlist_id, track_id FROM user_playlist_tracks").all()).results;
+    const by = {}; for (const l of links) (by[l.playlist_id] ??= []).push(l.track_id);
+    return json(results.map(p => ({ ...p, tracks: by[p.id] || [], cover_url:p.cover_v ? `/art/user-playlist/${p.id}?v=${p.cover_v}` : null })));
+  }
+  if(path==="/api/playlist-heart" && m==="POST"){
+    const b=await req.json().catch(()=>({})), id=clean(b.id,220);
+    if(!id)return json({error:"Playlist required."},400);
+    const visitor=getCookie(req,"riffvault_heart") || crypto.randomUUID();
+    await DB.prepare("INSERT OR IGNORE INTO playlist_hearts (playlist_id,voter) VALUES (?,?)").bind(id,visitor).run();
+    const row=await DB.prepare("SELECT COUNT(*) AS n FROM playlist_hearts WHERE playlist_id = ?").bind(id).first();
+    return json({hearts:row.n},200,{"set-cookie":`riffvault_heart=${visitor}; Path=/; SameSite=Lax; Max-Age=31536000`});
   }
   if (path === "/api/site" && m === "GET") return json(await siteSettings(DB));
   if (path === "/api/entity-reactions" && m === "GET") {
@@ -825,7 +887,25 @@ async function api(req, env, url, ctx) {
     const { results } = await DB.prepare("SELECT name, genres FROM artist_info WHERE wtitle IS NOT NULL AND genres != '[]'").all();
     return json(Object.fromEntries(results.map((r) => [r.name, parseGenres(r)])), 200, { "cache-control": "public, max-age=60" });
   }
-  if (path === "/api/lyrics" && m === "GET") return serveLyrics(env, url);
+  if (path === "/api/lyrics" && m === "GET") {
+    if (url.searchParams.has("title") && url.searchParams.has("artist")) {
+      const title = clean(url.searchParams.get("title"),160), artist = clean(url.searchParams.get("artist"),160);
+      if (!title || !artist) return json({error:"Missing metadata"},400);
+      const key = "lyrics-peer/" + await sha256((artist + "\n" + title).toLowerCase());
+      const cached = await env.MUSIC.get(key);
+      if (cached) return json(await cached.json());
+      try {
+        const song = {title, artists:[artist], album:clean(url.searchParams.get("album"),160), duration:Number(url.searchParams.get("duration"))||0};
+        const [lr,ov] = await Promise.allSettled([lrclibChain(song, AbortSignal.timeout(7000)), ovhChain(song, AbortSignal.timeout(7000))]);
+        const found = [lr,ov].find(r=>r.status === "fulfilled" && r.value && (r.value.plain || r.value.synced))?.value;
+        if (!found) return json({error:"No lyrics found"},404);
+        const result = {synced:found.synced||null, plain:found.plain||null, instrumental:!!found.instrumental, source:found.source};
+        await env.MUSIC.put(key,JSON.stringify(result),{httpMetadata:{contentType:"application/json"}});
+        return json(result);
+      } catch {return json({error:"Lyrics unavailable"},502);}
+    }
+    return serveLyrics(env, url);
+  }
   if (path === "/api/requests" && m === "GET") {
     const { results } = await DB.prepare("SELECT id, kind, title, artist, album, image, url, created_at, meta FROM requests WHERE status = 'active' ORDER BY created_at, rowid").all();
     return json(results.map(({ meta, ...r }) => {
@@ -887,6 +967,23 @@ async function api(req, env, url, ctx) {
        FROM reactions WHERE track_id = ?`).bind(id).first();
     return json(c);
   }
+  if (path === "/api/register" && m === "POST") {
+    const b = await req.json().catch(() => ({}));
+    const username = clean(b.username, 32);
+    const password = String(b.password ?? "");
+    const confirm = String(b.confirm ?? "");
+    const adminName = (await DB.prepare("SELECT value FROM settings WHERE key = 'admin_username'").first())?.value || "admin";
+    if (!/^[a-zA-Z0-9_-]{3,32}$/.test(username)) return json({ error: "Username must be 3–32 characters using letters, numbers, _ or -." }, 400);
+    if (username.toLowerCase() === "admin" || username.toLowerCase() === adminName.toLowerCase()) return json({ error: "That username is reserved." }, 409);
+    if (password.length < 8) return json({ error: "Password must be at least 8 characters." }, 400);
+    if (password !== confirm) return json({ error: "Passwords do not match." }, 400);
+    const salt = hex(crypto.getRandomValues(new Uint8Array(16)));
+    const id = crypto.randomUUID();
+    try {
+      await DB.prepare("INSERT INTO user_accounts (id, username, salt, hash, created_at) VALUES (?,?,?,?,?)").bind(id, username, salt, await pbkdf2(password, salt), Date.now()).run();
+    } catch { return json({ error: "That username is already taken." }, 409); }
+    return json({ ok: true }, 201);
+  }
   if (path === "/api/login" && m === "POST") {
     const ip = req.headers.get("CF-Connecting-IP") || "unknown";
     const now = Date.now();
@@ -894,7 +991,11 @@ async function api(req, env, url, ctx) {
     const { n } = await DB.prepare("SELECT COUNT(*) AS n FROM attempts WHERE ip = ?").bind(ip).first();
     if (n >= 5) return json({ error: "Too many failed attempts. Try again in 15 minutes." }, 429);
     const body = await req.json().catch(() => ({}));
-    const row = await DB.prepare("SELECT salt, hash FROM admin WHERE id = ?").bind(clean(body.id, 50)).first();
+    const loginId = clean(body.id, 50);
+    const adminName = (await DB.prepare("SELECT value FROM settings WHERE key = 'admin_username'").first())?.value || "admin";
+    const adminRow = loginId.toLowerCase() === adminName.toLowerCase() ? await DB.prepare("SELECT salt, hash FROM admin WHERE id = 'admin'").first() : null;
+    const userRow = adminRow ? null : await DB.prepare("SELECT id, username, salt, hash FROM user_accounts WHERE username = ? COLLATE NOCASE").bind(loginId).first();
+    const row = adminRow || userRow;
     const attempt = await pbkdf2(String(body.password ?? ""), row ? row.salt : DEFAULT_SALT);
     if (!row || !safeEq(attempt, row.hash)) {
       await DB.prepare("INSERT INTO attempts (ip, ts) VALUES (?, ?)").bind(ip, now).run();
@@ -903,19 +1004,164 @@ async function api(req, env, url, ctx) {
     await DB.prepare("DELETE FROM attempts WHERE ip = ?").bind(ip).run();
     await DB.prepare("DELETE FROM sessions WHERE expires < ?").bind(now).run();
     const token = hex(crypto.getRandomValues(new Uint8Array(32)));
-    await DB.prepare("INSERT INTO sessions (token, expires) VALUES (?, ?)").bind(await sha256(token), now + SESSION_MS).run();
-    return json({ ok: true }, 200, { "set-cookie": cookie(token, SESSION_MS / 1000) });
+    const role = adminRow ? "admin" : "user";
+    await DB.prepare("INSERT INTO sessions (token, expires, role, user_id) VALUES (?, ?, ?, ?)").bind(await sha256(token), now + SESSION_MS, role, userRow?.id || null).run();
+    return json({ ok: true, role, username: adminRow ? adminName : userRow.username }, 200, { "set-cookie": cookie(token, SESSION_MS / 1000, new URL(req.url).protocol === "https:") });
   }
   if (path === "/api/logout" && m === "POST") {
     const s = await session(req, env);
     if (s) await DB.prepare("DELETE FROM sessions WHERE token = ?").bind(s).run();
-    return json({ ok: true }, 200, { "set-cookie": cookie("", 0) });
+    return json({ ok: true }, 200, { "set-cookie": cookie("", 0, new URL(req.url).protocol === "https:") });
   }
-  if (path === "/api/me") return json({ admin: !!(await session(req, env)) });
+  if (path === "/api/me") {
+    const info = await sessionInfo(req, env);
+    if (!info) return json({ authenticated: false, admin: false });
+    if (info.role === "admin") {
+      const username = (await DB.prepare("SELECT value FROM settings WHERE key = 'admin_username'").first())?.value || "admin";
+      return json({ authenticated: true, admin: true, role: "admin", username });
+    }
+    const u = await DB.prepare("SELECT username FROM user_accounts WHERE id = ?").bind(info.user_id).first();
+    return json({ authenticated: !!u, admin: false, role: "user", username: u?.username || "" });
+  }
 
+  const auth = await sessionInfo(req, env);
+  if (path.startsWith("/api/user/")) {
+    // Authenticated user operations; admin credentials are handled separately.
+
+    if (!auth || auth.role !== "user") return json({ error: "User login required." }, 401);
+    if(path==="/api/user/password" && m==="POST"){
+      const b=await req.json().catch(()=>({}));const password=String(b.password||""), confirm=String(b.confirm||"");
+      if(password.length<8)return json({error:"New password must be at least 8 characters."},400);
+      if(password!==confirm)return json({error:"New passwords do not match."},400);
+      const row=await DB.prepare("SELECT salt,hash FROM user_accounts WHERE id = ?").bind(auth.user_id).first();
+      if(!row || !safeEq(await pbkdf2(String(b.current||""),row.salt),row.hash))return json({error:"Current password is incorrect."},403);
+      const salt=hex(crypto.getRandomValues(new Uint8Array(16)));
+      await DB.prepare("UPDATE user_accounts SET salt = ?, hash = ? WHERE id = ?").bind(salt,await pbkdf2(password,salt),auth.user_id).run();
+      return json({ok:true});
+    }
+    if(path==="/api/user/playlists/copy" && m==="POST"){
+      const b=await req.json().catch(()=>({})),name=clean(b.name,80);
+      if(!name || !Array.isArray(b.tracks) || b.tracks.length>2000)return json({error:"Invalid playlist."},400);
+      const id=crypto.randomUUID();
+      const refs=[];
+      for(const raw of b.tracks){const ref=String(raw);if(ref.length>220)continue;
+        if(await DB.prepare("SELECT id FROM tracks WHERE id = ?").bind(ref).first()){refs.push(ref);continue;}
+        if(/^peer:[a-f0-9]{64}$/.test(ref) && await DB.prepare("SELECT ref FROM peer_track_refs WHERE ref = ?").bind(ref).first()){refs.push(ref);continue;}
+        // Remote tracks must be registered via the peer-track-ref API before copying.
+      }
+      try{await DB.prepare("INSERT INTO user_playlists (id,user_id,name,is_public,created_at) VALUES (?,?,?,?,?)").bind(id,auth.user_id,name,0,Date.now()).run();}
+      catch{return json({error:"You already have a playlist with that name."},409);}
+      for(const ref of new Set(refs))await DB.prepare("INSERT OR IGNORE INTO user_playlist_tracks (playlist_id,track_id,added_at) VALUES (?,?,?)").bind(id,ref,Date.now()).run();
+      let cover_cached=false;
+      // Copy a locally hosted public user-playlist cover without network requests.
+      if (b.source_playlist_id && !b.source_origin) {
+        const sourceId=clean(b.source_playlist_id,100);
+        const source=await DB.prepare("SELECT id FROM user_playlists WHERE id = ? AND (is_public = 1 OR user_id = ?)").bind(sourceId,auth.user_id).first();
+        if(source){
+          const image=await env.MUSIC.get(`art/user-playlist/${sourceId}`);
+          if(image){await env.MUSIC.put(`art/user-playlist/${id}`,await image.arrayBuffer(),{httpMetadata:image.httpMetadata});
+            await DB.prepare("UPDATE user_playlists SET cover_v = ? WHERE id = ?").bind(Date.now(),id).run();cover_cached=true;}
+        }
+      }
+      if (!cover_cached && b.cover_url && b.source_origin) {
+        try {
+          const origin = new URL(String(b.source_origin));
+          const peer = await DB.prepare("SELECT url FROM peers WHERE url = ?").bind(origin.origin).first();
+          // Only fetch from a configured peer; no redirects or arbitrary URL fetching.
+          if (peer && origin.protocol === "https:") {
+            const url = new URL(String(b.cover_url),origin.origin);
+            if (url.origin === origin.origin && ["https:"].includes(url.protocol)) {
+              const response = await fetch(url.href,{redirect:"error",signal:AbortSignal.timeout(8000)});
+              const type=(response.headers.get("content-type")||"").split(";")[0];
+              const length=Number(response.headers.get("content-length")||0);
+              if(response.ok && ["image/jpeg","image/png","image/webp"].includes(type) && length<=5*1024*1024) {
+                const bytes=await response.arrayBuffer();
+                if(bytes.byteLength<=5*1024*1024) {
+                  await env.MUSIC.put(`art/user-playlist/${id}`,bytes,{httpMetadata:{contentType:type}});
+                  await DB.prepare("UPDATE user_playlists SET cover_v = ? WHERE id = ?").bind(Date.now(),id).run();
+                  cover_cached=true;
+                }
+              }
+            }
+          }
+        } catch(e) { console.warn("Peer cover cache failed",e.message); }
+      }
+      // If the source playlist has no explicit cover, cache artwork from its first
+      // remote track. This keeps the copied playlist visually useful offline.
+      if (!cover_cached && refs.length) {
+        try {
+          const first = await DB.prepare("SELECT origin,remote_id FROM peer_track_refs WHERE ref = ?").bind(refs[0]).first();
+          if (first && new URL(first.origin).protocol === "https:" &&
+              await DB.prepare("SELECT url FROM peers WHERE url = ?").bind(first.origin).first()) {
+            const artUrl = first.origin + "/art/track?id=" + encodeURIComponent(first.remote_id);
+            const response = await fetch(artUrl,{redirect:"error",signal:AbortSignal.timeout(8000)});
+            const type=(response.headers.get("content-type")||"").split(";")[0];
+            const length=Number(response.headers.get("content-length")||0);
+            if(response.ok && ["image/jpeg","image/png","image/webp"].includes(type) && length<=5*1024*1024) {
+              const bytes=await response.arrayBuffer();
+              if(bytes.byteLength<=5*1024*1024){
+                await env.MUSIC.put(`art/user-playlist/${id}`,bytes,{httpMetadata:{contentType:type}});
+                await DB.prepare("UPDATE user_playlists SET cover_v = ? WHERE id = ?").bind(Date.now(),id).run();
+                cover_cached=true;
+              }
+            }
+          }
+        } catch(e) { console.warn("Peer track artwork cache failed",e.message); }
+      }
+      return json({id,copied:refs.length,skipped:b.tracks.length-refs.length,cover_cached},201);
+    }
+    if((x=path.match(/^\/api\/user\/playlists\/([\w-]+)\/cover$/)) && m==="PUT"){
+      const owned=await DB.prepare("SELECT id FROM user_playlists WHERE id = ? AND user_id = ?").bind(x[1],auth.user_id).first();
+      if(!owned)return json({error:"Playlist not found."},404);
+      const type=(req.headers.get("content-type")||"").split(";")[0];
+      if(!["image/jpeg","image/png","image/webp"].includes(type))return json({error:"JPEG, PNG or WebP required."},415);
+      const bytes=await req.arrayBuffer();if(bytes.byteLength>5*1024*1024)return json({error:"Image exceeds 5 MB."},413);
+      await env.MUSIC.put(`art/user-playlist/${x[1]}`,bytes,{httpMetadata:{contentType:type}});
+      const v=Date.now();await DB.prepare("UPDATE user_playlists SET cover_v = ? WHERE id = ?").bind(v,x[1]).run();return json({ok:true,cover_url:`/art/user-playlist/${x[1]}?v=${v}`});
+    }
+    if (path === "/api/user/playlists" && m === "GET") {
+      const pls = (await DB.prepare("SELECT id, name, is_public, created_at, cover_v FROM user_playlists WHERE user_id = ? ORDER BY created_at DESC").bind(auth.user_id).all()).results;
+      const links = (await DB.prepare("SELECT playlist_id, track_id FROM user_playlist_tracks").all()).results;
+      const by = {}; for (const l of links) (by[l.playlist_id] ??= []).push(l.track_id);
+      return json(pls.map(p => ({ ...p, tracks: by[p.id] || [], cover_url:p.cover_v ? `/art/user-playlist/${p.id}?v=${p.cover_v}` : null })));
+    }
+    if (path === "/api/user/playlists" && m === "POST") {
+      const b = await req.json().catch(() => ({})), name = clean(b.name, 80);
+      if (!name) return json({ error: "Playlist name is required." }, 400);
+      const id = crypto.randomUUID();
+      try { await DB.prepare("INSERT INTO user_playlists (id,user_id,name,is_public,created_at) VALUES (?,?,?,?,?)").bind(id,auth.user_id,name,b.is_public?1:0,Date.now()).run(); }
+      catch { return json({ error: "You already have a playlist with that name." }, 409); }
+      return json({ id, name, is_public: !!b.is_public, tracks: [] }, 201);
+    }
+    if ((x = path.match(/^\/api\/user\/playlists\/([\w-]+)$/)) && m === "PATCH") {
+      const b = await req.json().catch(() => ({}));
+      const r = await DB.prepare("UPDATE user_playlists SET name = COALESCE(?,name), is_public = COALESCE(?,is_public) WHERE id = ? AND user_id = ?").bind(b.name ? clean(b.name,80) : null, b.is_public === undefined ? null : (b.is_public?1:0), x[1], auth.user_id).run();
+      return json({ ok: true });
+    }
+    if ((x = path.match(/^\/api\/user\/playlists\/([\w-]+)\/tracks$/)) && m === "POST") {
+      const b = await req.json().catch(() => ({}));
+      const owned = await DB.prepare("SELECT id FROM user_playlists WHERE id = ? AND user_id = ?").bind(x[1],auth.user_id).first();
+      if (!owned) return json({error:"Playlist not found."},404);
+      const ref = clean(b.track_id, 220);
+      const peerRef = /^peer:[a-f0-9]{64}$/.test(ref);
+      if (peerRef && !(await DB.prepare("SELECT ref FROM peer_track_refs WHERE ref = ?").bind(ref).first())) return json({error:"Peer track not registered."},404);
+      if (!peerRef && !(await DB.prepare("SELECT id FROM tracks WHERE id = ?").bind(ref).first())) return json({error:"Track not found."},404);
+      await DB.prepare("INSERT OR IGNORE INTO user_playlist_tracks (playlist_id,track_id,added_at) VALUES (?,?,?)").bind(x[1],ref,Date.now()).run();
+      return json({ok:true});
+    }
+    if ((x = path.match(/^\/api\/user\/playlists\/([\w-]+)\/tracks\/([\w-]+)$/)) && m === "DELETE") {
+      await DB.prepare("DELETE FROM user_playlist_tracks WHERE playlist_id = ? AND track_id = ? AND EXISTS (SELECT 1 FROM user_playlists WHERE id = ? AND user_id = ?)").bind(x[1],x[2],x[1],auth.user_id).run();
+      return json({ok:true});
+    }
+    if ((x = path.match(/^\/api\/user\/playlists\/([\w-]+)$/)) && m === "DELETE") {
+      await DB.batch([DB.prepare("DELETE FROM user_playlist_tracks WHERE playlist_id = ? AND EXISTS (SELECT 1 FROM user_playlists WHERE id = ? AND user_id = ?)").bind(x[1],x[1],auth.user_id),DB.prepare("DELETE FROM user_playlists WHERE id = ? AND user_id = ?").bind(x[1],auth.user_id)]);
+      return json({ok:true});
+    }
+    return json({error:"Not found."},404);
+  }
   // ---------- admin only ----------
-  const sid = await session(req, env);
-  if (!sid) return json({ error: "Not logged in." }, 401);
+  const sid = auth?.token;
+  if (!sid || auth.role !== "admin") return json({ error: "Admin access required." }, 403);
 
   if (path === "/api/admin/bio/refresh" && m === "POST") {
     const b = await req.json().catch(() => ({}));
@@ -1153,6 +1399,14 @@ async function api(req, env, url, ctx) {
     try { await DB.prepare("DELETE FROM entity_reactions").run(); } catch {}
     return json({ ok: true, removed });
   }
+  if (path === "/api/admin/username" && m === "PUT") {
+    const b = await req.json().catch(() => ({})), username = clean(b.username,32);
+    if (!/^[a-zA-Z0-9_-]{3,32}$/.test(username)) return json({error:"Username must be 3–32 characters using letters, numbers, _ or -."},400);
+    if (username.toLowerCase() === "admin") return json({error:"Choose a username other than admin."},400);
+    if (await DB.prepare("SELECT 1 FROM user_accounts WHERE username = ? COLLATE NOCASE").bind(username).first()) return json({error:"That username is already used by a member."},409);
+    await DB.prepare("INSERT INTO settings (key,value) VALUES ('admin_username',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(username).run();
+    return json({ok:true,username});
+  }
   if (path === "/api/admin/password" && m === "POST") {
     const b = await req.json().catch(() => ({}));
     const row = await DB.prepare("SELECT salt, hash FROM admin WHERE id = 'admin'").first();
@@ -1276,12 +1530,21 @@ export default {
         if (peerPaths) return new Response(null, { status: 204, headers: CORS_PEER });
       }
       if (url.pathname === "/site/favicon") return withCors(await serveFavicon(env), share);
+      if(url.pathname.startsWith("/art/user-playlist/")){
+        const id=url.pathname.slice("/art/user-playlist/".length);
+        if(!/^[\w-]+$/.test(id))return new Response("Not found",{status:404});
+        const p=await env.DB.prepare("SELECT is_public,user_id FROM user_playlists WHERE id = ?").bind(id).first();
+        const auth=await sessionInfo(req,env);
+        if(!p || (!p.is_public && auth?.user_id!==p.user_id && auth?.role!=="admin"))return new Response("Not found",{status:404});
+        const obj=await env.MUSIC.get(`art/user-playlist/${id}`);if(!obj)return new Response("Not found",{status:404});
+        const h=new Headers();obj.writeHttpMetadata(h);h.set("cache-control","public, max-age=3600");return withCors(new Response(obj.body,{headers:h}),share);
+      }
       if (url.pathname.startsWith("/audio/")) return withCors(await serveAudio(req, env, url.pathname.slice(7)), share);
       if (["/art/album", "/art/artist", "/art/track", "/art/playlist"].includes(url.pathname)) return withCors(await serveArt(env, url), share);
       if (url.pathname.startsWith("/api/")) {
         const res = await api(req, env, url, ctx);
         // CORS only on public read endpoints (not admin)
-        const publicPeer = share && (url.pathname === "/api/tracks" || url.pathname === "/api/playlists" || url.pathname === "/api/site" || url.pathname === "/api/peer" || url.pathname === "/api/network/peers");
+        const publicPeer = share && (url.pathname === "/api/tracks" || url.pathname === "/api/playlists" || url.pathname === "/api/user-playlists" || url.pathname === "/api/site" || url.pathname === "/api/peer" || url.pathname === "/api/network/peers");
         return withCors(res, publicPeer);
       }
     } catch (e) {

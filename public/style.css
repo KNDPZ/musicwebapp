@@ -299,3 +299,59 @@ body.up-open #lyrics.full{right:340px}
 .hrow .simtile .art{width:112px;height:112px}
 .home-ad{margin-bottom:8px}
 .ib.ico svg{fill:currentColor;stroke:currentColor;stroke-width:1.6}
+
+/* RiffVault navigation and playlist controls */
+.home-row-head{display:flex;align-items:center;justify-content:space-between;gap:1rem}.home-row-head h2{margin:0}.hnav{border:1px solid #7775;border-radius:50%;background:transparent;color:inherit;font-size:1.6rem;cursor:pointer;width:36px;height:36px}.hrow{overflow-x:auto;scrollbar-width:none;scroll-behavior:smooth}.hrow::-webkit-scrollbar{display:none}.album-add{margin-left:auto;border:1px solid #7776;border-radius:50%;background:transparent;color:inherit;cursor:pointer;font-size:1.3rem}.user-tabs{margin-bottom:1rem}#playlistDialog{max-width:95vw;color:inherit;background:#202126;border:1px solid #7777;border-radius:12px;padding:1.5rem}#playlistDialog select{padding:.7rem;background:#303139;color:white;border-radius:6px}
+
+/* RiffVault release: account dropdown, Spotify-style home carousel, consistent tabs */
+.account-menu{position:relative;z-index:35;min-width:75px;display:flex;justify-content:flex-end}
+.account-menu #gear{display:flex;align-items:center;gap:8px;width:auto;min-width:44px;padding:5px 10px;border-radius:22px}
+.account-menu #gear:hover,.account-menu.signed-in:hover #gear{background:var(--panel)}
+.account-drop{position:absolute;right:0;top:100%;min-width:220px;padding:8px;background:var(--panel);border:1px solid var(--line2);border-radius:12px;box-shadow:0 12px 36px #0009;display:flex;flex-direction:column;gap:3px;z-index:50}
+.account-drop.hidden{display:none!important}
+.account-drop a,.account-drop button{display:block;width:100%;box-sizing:border-box;text-align:left;background:transparent;border:0;border-radius:7px;color:var(--text);text-decoration:none;font:inherit;font-size:14px;font-weight:600;padding:11px 12px;cursor:pointer}
+.account-drop a:hover,.account-drop button:hover{background:var(--accent);color:#131211}
+.hsec{position:relative}.hscroll{position:relative}.hrow{scrollbar-width:none;overflow-x:auto;scroll-behavior:smooth}.hrow::-webkit-scrollbar{display:none}
+.hnav{position:absolute;top:50%;transform:translateY(-50%);z-index:3;width:42px;height:42px;border-radius:50%;border:0;background:#202020ed;color:white;font-size:26px;display:flex;align-items:center;justify-content:center;opacity:0;transition:opacity .15s,background .15s;box-shadow:0 3px 15px #0008}
+.hnav-left{left:8px}.hnav-right{right:8px}.hscroll:hover .hnav,.hnav:focus-visible{opacity:1}.hnav:hover{background:#343434}
+@media(hover:none){.hnav{opacity:.9}}
+.settings-panel{max-width:550px;padding:18px 0}.user-tabs{display:none}
+
+/* Playlist details and authenticated account pages */
+.account-drop [hidden]{display:none!important}
+.user-playlist-entry{display:block;padding:14px 16px;margin:6px 0;border-radius:10px;background:var(--panel);color:var(--text);text-decoration:none}
+.user-playlist-entry:hover{background:var(--line2)}
+.playlist-detail-hero{display:flex;flex-direction:column;align-items:flex-start;gap:10px;margin:24px 0 28px}
+.playlist-detail-cover{width:min(250px,60vw);aspect-ratio:1;overflow:hidden;border-radius:12px;background:var(--panel)}
+.playlist-detail-cover .art,.playlist-detail-cover .mosaic{width:100%;height:100%;display:block}
+.playlist-cover{width:100%;height:100%;object-fit:cover}
+.playlist-detail-hero h1{margin:4px 0 0}
+.playlist-detail-actions{display:flex;gap:10px;flex-wrap:wrap}
+.playlist-edit,.password-form{display:flex;flex-direction:column;align-items:flex-start;gap:14px;margin:16px 0 30px}
+.playlist-edit label,.password-form label{display:flex;flex-direction:column;gap:6px}
+.playlist-edit input:not([type=checkbox]),.password-form input{min-width:min(320px,75vw)}
+
+/* RiffVault playlist detail and modal polish */
+.owned-playlist-header{position:relative;width:max-content;max-width:100%}
+.owned-playlist-header .playlist-detail-hero{margin-bottom:18px}
+.playlist-cog{position:absolute;right:10px;top:10px;width:38px;height:38px;display:grid;place-items:center;background:#202020e8;color:var(--text);border:1px solid var(--line2);border-radius:50%;font-size:22px;cursor:pointer;transition:background .15s,transform .15s}
+.playlist-cog:hover,.playlist-cog:focus-visible{background:var(--accent);color:#111;transform:rotate(30deg)}
+.playlist-edit.card{max-width:470px;margin:10px 0 28px;align-items:stretch;padding:24px;gap:18px}
+.playlist-edit.card.hidden{display:none!important}
+.playlist-edit.card label{display:flex;flex-direction:column;gap:8px;font-size:14px;font-weight:600}
+.playlist-edit.card input:not([type=checkbox]){box-sizing:border-box;width:100%;min-width:0;max-width:100%}
+.playlist-edit.card .playlist-check{flex-direction:row;align-items:center;gap:10px}
+.playlist-edit-actions{display:flex;gap:10px;flex-wrap:wrap}
+.playlist-track-list{width:100%;margin-top:20px}
+.playlist-dialog{box-sizing:border-box;width:min(440px,calc(100vw - 32px));max-width:calc(100vw - 32px);max-height:calc(100dvh - 36px);overflow-x:hidden;overflow-y:auto;padding:24px;border-radius:16px}
+.playlist-dialog-content{display:flex;flex-direction:column;gap:12px;min-width:0;width:100%;box-sizing:border-box}
+.playlist-dialog-content h2{margin:0 0 12px;font-size:24px}
+.playlist-dialog-content label{font-size:14px;font-weight:600}
+.playlist-dialog-content input:not([type=checkbox]),.playlist-dialog-content select{box-sizing:border-box;min-width:0;max-width:100%;width:100%;height:46px;border:1px solid var(--line2);border-radius:9px;background:var(--bg);color:var(--text);padding:10px 12px;font:inherit}
+.playlist-dialog-content .playlist-check{display:flex;align-items:center;gap:9px;cursor:pointer}
+.playlist-dialog-content .playlist-check input{width:17px;height:17px;accent-color:var(--accent)}
+.playlist-dialog-divider{color:var(--muted);font-size:13px;margin:10px 0 2px}
+.playlist-dialog-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:8px;flex-wrap:wrap}
+.admin-account-shortcut{padding:14px 10px 4px}
+.admin-account-pill{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 13px;border-radius:22px;background:var(--panel);color:var(--text);text-decoration:none;font-weight:600;font-size:13px}
+.admin-account-pill:hover{background:var(--accent);color:#111}

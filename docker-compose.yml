@@ -1,64 +1,30 @@
-# Music app – run locally with Docker / Portainer
-#
-# Plain HTTP (login works on http://localhost only – the admin cookie is "Secure"):
-#   docker compose up -d --build
-#
-# HTTPS (needed to log in as admin from other devices / LAN IPs):
-#   docker compose --profile https up -d --build
-#   -> https://localhost:8443   (see .env.example and README for hostnames, Let's Encrypt, own certs)
-#
-# Portainer: Stacks → Add stack → Repository
-#   Repository URL: https://github.com/YOUR_USER/music-app
-#   Compose path:   docker-compose.yml
-#   For HTTPS add the environment variable  COMPOSE_PROFILES=https  (plus any from .env.example)
-
+# Docker self-hosting is independent of Cloudflare production.
+# Change MUSIC_FOLDER and UPLOAD_FOLDER in .env or Portainer volume mapping.
 services:
-  music-app:
+  riffvault:
     build: .
-    image: music-app:local
-    container_name: music-app
+    image: riffvault:local
+    container_name: riffvault
     restart: unless-stopped
     ports:
-      # Set APP_BIND=127.0.0.1 when using HTTPS so only the proxy is reachable from the network
-      - "${APP_BIND:-0.0.0.0}:${APP_PORT:-8787}:8787"
-    volumes:
-      # Persist R2 (mp3s + artwork) and D1 (library, sessions, settings)
-      - music-app-data:/app/.wrangler/state
-    environment:
-      - NODE_ENV=production
-    # Optional: give the container more memory if you upload large libraries
-    # mem_limit: 1g
-
-  # Optional HTTPS reverse proxy – only starts with:  --profile https  (or COMPOSE_PROFILES=https)
-  music-app-https:
-    profiles: ["https"]
-    build:
-      context: .
-      dockerfile: Dockerfile.caddy
-    image: music-app-https:local
-    container_name: music-app-https
-    restart: unless-stopped
-    depends_on:
-      - music-app
-    ports:
+      - "${HTTP_PORT:-8080}:80"
       - "${HTTPS_PORT:-8443}:443"
     environment:
-      - SITE_ADDRESS=${SITE_ADDRESS:-localhost}
-      - DEFAULT_SNI=${DEFAULT_SNI:-${SITE_ADDRESS:-localhost}}
-      - TLS_ARGS=${TLS_ARGS:-internal}
+      NODE_ENV: production
+      SITE_ADDRESS: ${SITE_ADDRESS:-localhost}
+      DEFAULT_SNI: ${DEFAULT_SNI:-localhost}
+      TLS_ARGS: ${TLS_ARGS:-internal}
+      SCANNER_SECRET: ${SCANNER_SECRET:-}
+      MUSIC_SCAN_PATHS: /music
+      MUSIC_SCAN_INTERVAL: ${MUSIC_SCAN_INTERVAL:-300}
     volumes:
-      - music-app-caddy-data:/data   # certificates + local CA (keep, so the CA stays the same)
-      - music-app-caddy-config:/config
-      # Only used with TLS_ARGS="/certs/cert.pem /certs/key.pem"
-      # CERT_DIR = absolute host folder (bind mount) or leave unset for an empty named volume
-      - ${CERT_DIR:-music-app-certs}:/certs:ro
-
+      - riffvault-local-state:/app/.wrangler/state
+      - ${MUSIC_FOLDER:-./music}:/music:ro
+      - ${UPLOAD_FOLDER:-./uploads}:/data/uploads
+      - riffvault-caddy-data:/data
+      - riffvault-caddy-config:/config
+      - ${CERT_DIR:-./certs}:/certs:ro
 volumes:
-  music-app-data:
-    name: music-app-data
-  music-app-caddy-data:
-    name: music-app-caddy-data
-  music-app-caddy-config:
-    name: music-app-caddy-config
-  music-app-certs:
-    name: music-app-certs
+  riffvault-local-state:
+  riffvault-caddy-data:
+  riffvault-caddy-config:

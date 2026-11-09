@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RiffVault · My playlists</title>
+<link rel="icon" id="favicon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Ctext y=%27.9em%27 font-size=%2790%27%3E🎵%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-heart" viewBox="0 0 24 24"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 0 0-7.8 7.8l1 1.1L12 21l7.8-7.5 1-1.1a5.5 5.5 0 0 0 0-7.8z"/></symbol>
+  <symbol id="i-up" viewBox="0 0 24 24"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.3a2 2 0 0 0 2-1.7l1.4-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.7a2 2 0 0 0-2 1.7l-1.4 9a2 2 0 0 0 2 2.3zm7-13h2.7a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H17"/></symbol>
+  <symbol id="i-shuffle" viewBox="0 0 24 24"><path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></symbol>
+  <symbol id="i-repeat" viewBox="0 0 24 24"><path d="M17 1l4 4-4 4M3 11V9a4 4 0 0 1 4-4h14M7 23l-4-4 4-4M21 13v2a4 4 0 0 1-4 4H3"/></symbol>
+  <symbol id="i-vol" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4zM19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></symbol>
+  <symbol id="i-mute" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4zM23 9l-6 6M17 9l6 6"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+  <symbol id="i-lyrics" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2zM8 8h8M8 12h5"/></symbol>
+  <symbol id="i-mic" viewBox="0 0 24 24"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3zM19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8"/></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24"><path d="M12 12a4.2 4.2 0 1 0 0-8.4 4.2 4.2 0 0 0 0 8.4z"/><path d="M4.2 20.4c.6-3.6 3.6-5.6 7.8-5.6s7.2 2 7.8 5.6"/></symbol>
+  <symbol id="i-radio" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.48M7.76 16.24a6 6 0 0 1 0-8.48M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
+</svg>
+
+<div id="boot" class="boot" role="status" aria-live="polite">
+  <div class="boot-ring" aria-hidden="true">
+    <div class="boot-ticks" id="bootTicks"></div>
+    <b id="bootPct">0</b>
+  </div>
+  <div class="boot-track" aria-hidden="true"><i id="bootFill"></i></div>
+  <p id="bootWhat" class="boot-what">Songs, artists and playlists</p>
+</div>
+
+<div class="app">
+  <aside class="side">
+    <a class="brand" id="brand" href="#home" aria-label="Home">Music</a>
+    <nav id="nav" aria-label="Browse"></nav>
+  </aside>
+  <div class="main">
+    <div class="stick">
+      <div class="top">
+        <label for="q" class="hidden">Search</label>
+        <input id="q" type="search" placeholder="Search songs, artists, albums" style="flex:1;min-width:180px;max-width:420px">
+        <div class="account-menu" id="accountMenu" style="margin-left:auto">
+          <button class="ib ico" id="gear" aria-label="Log in" title="Account"><span id="whoami" class="whoami"></span><svg><use href="#i-user"/></svg></button>
+          <div class="account-drop hidden" id="accountDrop">
+            <a href="#user/private">My playlists</a><a href="#user/public">Public playlists</a>
+            <a href="#settings">Account settings</a><button type="button" id="userLogout">Log out</button>
+          </div>
+        </div>
+      </div>
+      <div id="subbar" class="subbar" hidden></div>
+    </div>
+    <main id="list"></main>
+  </div>
+</div>
+
+<aside id="upnext" class="upnext hidden" aria-label="Up next">
+  <div class="uph"><b>Up next</b><span class="muted" id="uql"></span></div>
+  <div id="uplist"></div>
+</aside>
+
+<aside id="lyrics" class="upnext hidden" aria-label="Lyrics">
+  <div class="uph"><div class="uht"><b>Lyrics</b><span class="muted" id="lyt"></span></div><button class="ib" id="lyx" type="button" aria-label="Close lyrics"><svg class="fill" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg></button></div>
+  <div id="lybody" class="lybody"></div>
+</aside>
+
+<div class="player" id="player">
+  <div class="p-left">
+    <div class="info"><span id="pc"></span><span class="txt"><b id="pt">Nothing playing</b><br><span class="muted" id="pa">Pick a song</span></span></div>
+    <div class="reacts">
+      <button class="ib react tip" id="bh" data-tip="Heart this song" aria-label="Heart" aria-pressed="false"><svg><use href="#i-heart"/></svg><small id="ch">0</small></button>
+      <button class="ib react tip" id="bl" data-tip="Like" aria-label="Like" aria-pressed="false"><svg><use href="#i-up"/></svg><small id="cl">0</small></button>
+      <button class="ib react tip" id="bd" data-tip="Dislike" aria-label="Dislike" aria-pressed="false"><svg><use href="#i-down"/></svg><small id="cd">0</small></button>
+    </div>
+  </div>
+  <div class="p-mid">
+    <div class="ctl">
+      <div class="shufwrap">
+        <button class="ib tip" id="shuf" data-tip="Shuffle" aria-label="Shuffle" aria-haspopup="menu" aria-expanded="false" aria-controls="shufMenu"><svg><use href="#i-shuffle"/></svg></button>
+        <div class="smenu" id="shufMenu" role="menu" aria-label="Choose what to shuffle">
+          <button class="sitem" id="sAll" role="menuitem"><svg><use href="#i-shuffle"/></svg>All songs</button>
+          <button class="sitem" id="sArtist" role="menuitem"><svg><use href="#i-user"/></svg>This artist</button>
+          <button class="sitem" id="sList" role="menuitem"><svg><use href="#i-list"/></svg>This playlist</button>
+        </div>
+      </div>
+      <button class="ib tip" id="prev" data-tip="Previous" aria-label="Previous"><svg class="fill" viewBox="0 0 24 24"><path d="M6 5h2v14H6zM20 5v14L9 12z"/></svg></button>
+      <button class="ib play tip" id="pp" data-tip="Play" aria-label="Play"><svg class="fill" viewBox="0 0 24 24" id="ppi"><path d="M7 4v16l13-8z"/></svg></button>
+      <button class="ib tip" id="next" data-tip="Next" aria-label="Next"><svg class="fill" viewBox="0 0 24 24"><path d="M16 5h2v14h-2zM4 5v14l11-7z"/></svg></button>
+      <button class="ib tip" id="rep" data-tip="Repeat: off" aria-label="Repeat: off"><svg><use href="#i-repeat"/></svg><span class="badge" id="repT"></span></button><button class="ib tip" id="playlistAdd" title="Add playing song to playlist" aria-label="Add playing song to playlist" hidden>＋</button>
+    </div>
+    <div class="seek"><span class="muted" id="cur">0:00</span><input id="seek" type="range" min="0" max="100" value="0" step="0.1" aria-label="Seek"><span class="muted" id="dur">0:00</span></div>
+  </div>
+  <div class="p-right">
+    <button class="ib tip" id="lybtn" data-tip="Lyrics" aria-label="Lyrics" aria-expanded="false" aria-controls="lyrics"><svg><use href="#i-mic"/></svg></button>
+    <button class="ib tip" id="qbtn" data-tip="Up next" aria-label="Up next list" aria-expanded="false" aria-controls="upnext"><svg><use href="#i-list"/></svg></button>
+    <div class="vol"><button class="ib tip" id="mute" data-tip="Mute" aria-label="Mute"><svg id="muteI"><use href="#i-vol"/></svg></button><input id="vol" type="range" min="0" max="1" step="0.01" value="1" aria-label="Volume"></div>
+  </div>
+</div>
+<audio id="audio" preload="none"></audio>
+
+<dialog id="msgDlg" aria-labelledby="msgT">
+  <div class="form" style="flex-direction:column;align-items:stretch">
+    <h2 id="msgT" style="margin:0"></h2>
+    <p id="msgP" style="margin:0"></p>
+    <div class="form" style="justify-content:flex-end"><button class="btn" id="msgOk" type="button">OK</button></div>
+  </div>
+</dialog>
+
+<dialog id="dlg" aria-labelledby="dlgT">
+  <form id="loginForm" class="form" style="flex-direction:column;align-items:stretch">
+    <h2 id="dlgT" style="margin:0 0 4px">Log in</h2>
+    <label for="lid" class="muted">ID</label>
+    <input id="lid" type="text" autocomplete="username" required>
+    <label for="lpw" class="muted">Password</label>
+    <input id="lpw" type="password" autocomplete="current-password" required>
+    <p class="msg err" id="lerr" role="alert"></p>
+    <div class="form" style="justify-content:flex-end"><button class="btn ghost" type="button" id="lregister">Register</button><button class="btn ghost" type="button" id="lcancel">Cancel</button><button class="btn" type="submit">Log in</button></div>
+  </form>
+</dialog>
+<dialog id="registerDlg" aria-labelledby="regT">
+  <form id="registerForm" class="form" style="flex-direction:column;align-items:stretch">
+    <h2 id="regT" style="margin:0 0 4px">Create account</h2>
+    <p class="muted" style="margin:0">Account recovery is not available yet. Keep your password somewhere safe.</p>
+    <label for="regUser" class="muted">Username</label><input id="regUser" minlength="3" maxlength="32" autocomplete="username" required>
+    <label for="regPw" class="muted">Password (8+ characters)</label><input id="regPw" type="password" minlength="8" autocomplete="new-password" required>
+    <label for="regPw2" class="muted">Confirm password</label><input id="regPw2" type="password" minlength="8" autocomplete="new-password" required>
+    <p class="msg err" id="regErr" role="alert"></p>
+    <div class="form" style="justify-content:flex-end"><button class="btn ghost" type="button" id="regCancel">Cancel</button><button class="btn" type="submit">Create account</button></div>
+  </form>
+</dialog>
+<dialog id="playlistDialog" class="playlist-dialog" aria-label="Add to playlist"><div class="playlist-dialog-content"><h2>Add to playlist</h2><label for="playlistOptions">Existing playlist</label><select id="playlistOptions"></select><div class="playlist-dialog-divider">Or create a new playlist</div><label for="newPlaylistName">New playlist name</label><input id="newPlaylistName" maxlength="80" placeholder="New playlist"><label class="playlist-check"><input type="checkbox" id="newPlaylistPublic"> Public playlist</label><p class="msg err" id="playlistMessage" role="status"></p><div class="playlist-dialog-actions"><button class="btn ghost" id="playlistCancel" type="button">Cancel</button><button class="btn" id="playlistSave" type="button">Add</button></div></div></dialog>
+<script>if (!location.hash) location.replace("/users.html#user/private");</script>
+<script src="/app.js" type="module"></script>
+</body>
+</html>

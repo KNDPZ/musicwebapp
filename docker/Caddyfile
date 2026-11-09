@@ -1,0 +1,14 @@
+{
+ auto_https disable_redirects
+ default_sni {$DEFAULT_SNI:localhost}
+}
+:80 {
+ reverse_proxy 127.0.0.1:8788
+}
+{$SITE_ADDRESS:localhost} {
+ tls {$TLS_ARGS:internal}
+ reverse_proxy 127.0.0.1:8788 {
+  header_up CF-Connecting-IP {remote_host}
+  flush_interval -1
+ }
+}
