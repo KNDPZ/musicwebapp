@@ -376,7 +376,7 @@ function renderPage() {
   else if (tab === "artists") artistGrid(el, false);
   else if (tab === "playlists") {
     if(sub==="users") {
-      noView();el.innerHTML=userPublicPlaylists.length?`<div class="grid s">${userPublicPlaylists.filter(p=>!query||p.name.toLowerCase().includes(query)).map(p=>playlistTile(p,`by ${p.username}`)).join("")}</div>`:empty("No public user playlists yet.");
+      noView();el.innerHTML=userPublicPlaylists.length?`<div class="grid s">${userPublicPlaylists.filter(p=>!query||p.name.toLowerCase().includes(query)).map(p=>playlistTile(p,`by ${p.username || 'Unknown user'} · ${plural(arr(p.tracks).length, 'song')}`)).join("")}</div>`:empty("No public user playlists yet.");
     }else if(sub==="peer") {
       noView();el.innerHTML=peerPlaylists.length?`<div class="grid s">${peerPlaylists.filter(p=>!query||p.name.toLowerCase().includes(query)).map(p=>playlistTile(p,`from ${new URL(p.origin).hostname}`)).join("")}</div>`:empty("No peer playlists yet.");
     }else playlistGrid(el,false);
@@ -694,8 +694,9 @@ function albumCollage9(p) {
 }
 function ownedPlaylistCover(p){
   const fallback=albumCollage9(p);
-  if(p.cover_mode==='mosaic' || !p.cover_url)return fallback;
-  return `<span class="owned-cover-image"><img class="playlist-cover" src="${esc(p.cover_url)}" alt="${esc(p.name)} cover" onerror="this.parentElement.hidden=true;this.parentElement.nextElementSibling.hidden=false"></span><span class="owned-cover-fallback" hidden>${fallback}</span>`;
+  const source=playlistCoverUrl(p);
+  if(!source)return fallback;
+  return `<span class="owned-cover-image"><img class="playlist-cover" loading="lazy" src="${esc(source)}" alt="${esc(p.name)} cover" onerror="this.parentElement.hidden=true;this.parentElement.nextElementSibling.hidden=false"></span><span class="owned-cover-fallback" hidden>${fallback}</span>`;
 }
 
 function openEditPlaylist(p){
@@ -754,24 +755,33 @@ function openEditPlaylist(p){
   };
 }
 
-// Playlist cover: your own image, else 9 different album covers (9+ albums) or a 4-cover grid.
+// Resolve covers relative to the server that owns the playlist, not the viewer's
+// origin. Public user playlists expose /art/user-playlist/<id>; system playlists
+// expose cover_v and serve their custom cover from /art/playlist?id=<id>.
+function playlistCoverUrl(p) {
+  if (p.cover_mode === 'mosaic') return '';
+  const raw=String(p.cover_url || p.image || '').trim();
+  if (raw) {
+    try {
+      const u=new URL(raw,p.origin || location.origin);
+      if (u.protocol === 'https:' || u.protocol === 'http:') return u.href;
+    } catch {}
+  }
+  // Only the server-managed playlist collection uses the /art/playlist route.
+  // User playlists use /art/user-playlist and supply their own cover_url.
+  if (p.cover_v && !p.user_id && !p.username && p.kind !== 'user') {
+    const rawId=String(p.id || '').startsWith((p.origin || '') + '|')
+      ? String(p.id).slice(p.origin.length + 1) : String(p.id || '');
+    const origin=p.origin || location.origin;
+    return `${origin}/art/playlist?id=${enc(rawId)}&v=${enc(p.cover_v)}`;
+  }
+  return '';
+}
+// Always leave a cover-sized fallback in the DOM. This is important for older
+// peers, missing R2 objects and mixed-content-blocked HTTP artwork: the tile
+// still has an image area and its hover Play control remains accessible.
 function mosaic(p) {
-  // User-created playlists always use the same nine-tile fallback as My playlists.
-  if(p.kind==='user'||p.user_id||p.username)return ownedPlaylistCover(p);
-  if(p.cover_mode!=="mosaic" && p.cover_url){
-    const src=p.origin && p.cover_url.startsWith('/')?p.origin+p.cover_url:p.cover_url;
-    return art(src,p.name);
-  }
-  if (p.cover_v && p.cover_mode!=="mosaic") return art(`${p.origin||""}/art/playlist?id=${enc(p.id.split("|").pop())}&v=${p.cover_v}`, p.name);
-  const seen = new Set(), urls = [];
-  for (const id of p.tracks) {
-    const t = byId[id]; if (!t) continue;
-    const k = albumName(t) && !/^unknown/i.test(primaryArtist(t)) ? `a|${primaryArtist(t)}|${albumName(t)}` : `t|${t.id}`;
-    if (!seen.has(k)) { seen.add(k); urls.push(albumArt(t)); }
-  }
-  if (urls.length < 2) return art(urls[0] || "", p.name);
-  const cells = urls.length >= 9 ? urls.slice(0, 9) : Array.from({ length: 4 }, (_, i) => urls[i % urls.length]);
-  return `<span class="art mosaic ${cells.length === 9 ? "m9" : "m4"}">${cells.map((u) => `<i class="c"><img loading="lazy" alt="" src="${esc(u)}"></i>`).join("")}</span>`;
+  return ownedPlaylistCover(p);
 }
 
 // A playlist tile: the picture opens the playlist; the round play button (lower-right ninth of the picture, on hover) plays it.
@@ -807,8 +817,8 @@ function reactedPlaylists(el, tab) {
 }
 
 function playlistHero(p,ids,subtitle){
- const src=p.cover_url ? (p.origin && p.cover_url.startsWith("/") ? p.origin+p.cover_url : p.cover_url) : (p.image || "");
- const cover=src?`<img class="playlist-cover" src="${esc(src)}" alt="${esc(p.name)} cover" onerror="this.style.visibility='hidden'">`:mosaic(p);
+ // Use the same source-aware cover and failure fallback as playlist cards.
+ const cover=mosaic(p);
  return `<div class="playlist-detail-hero"><div class="playlist-detail-cover">${cover}</div><h1>${esc(p.name)}</h1><p class="muted">${esc(subtitle)}</p><div class="playlist-detail-actions"><button class="btn ghost playlist-heart" data-heart-playlist="${esc(p.id)}" title="Heart this playlist" aria-label="Heart playlist">♡ Heart</button><button class="btn playlist-copy" data-copy-playlist="${esc(p.id)}" title="Copy playlist to your account" aria-label="Copy playlist">＋ Copy to my playlists</button></div></div>`;
 }
 function playlistPage(el, id) {
@@ -1078,7 +1088,18 @@ $("#list").addEventListener("click", (e) => {
   const ent = e.target.closest("[data-ent]");
   if (ent) { reactEntity(ent.dataset.ent, ent.dataset.key, ent.dataset.r); return; }
   const pp = e.target.closest("[data-playpl]");
-  if (pp) { const p = playlists.find((x) => x.id === pp.dataset.playpl), ids = p ? p.tracks.filter((i) => byId[i]) : []; if (ids.length) startQueue(ids, ids[0], `Playlist “${p.name}”`, p.id); return; }
+  if (pp) {
+    const p=[...playlists,...peerPlaylists,...userPublicPlaylists].find(x=>x.id===pp.dataset.playpl);
+    const ids=p ? arr(p.tracks).map(raw=>{
+      const id=typeof raw==='object' ? (raw.ref||raw.track_id||raw.id) : raw;
+      if(byId[id])return id;
+      const remote=p.origin && !String(id).startsWith('peer:') ? `${p.origin}|${id}` : null;
+      return remote && byId[remote] ? remote : null;
+    }).filter(Boolean) : [];
+    if(ids.length)startQueue(ids,ids[0],`Playlist “${p.name}”`,p.id);
+    else if(p)popup('No playable songs','This playlist has no tracks available from its connected server.');
+    return;
+  }
   const at = e.target.closest("[data-atab]");
   if (at && artistView) { artistView.tab = at.dataset.atab; paintArtist(); return; }
   const rq = e.target.closest("[data-req]");

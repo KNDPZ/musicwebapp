@@ -426,3 +426,13 @@ body.up-open #lyrics.full{right:340px}
 .album-grid-tile{position:relative;display:block;min-width:0;min-height:0;overflow:hidden;background:linear-gradient(135deg,#44403b,#25211c);font-style:normal}
 .album-grid-tile::before{content:attr(data-letter);position:absolute;inset:0;display:grid;place-items:center;color:#d3d3c7;font-size:clamp(8px,1.5vw,18px);font-weight:750}
 .playlist-album-collage .album-grid-tile img{position:relative;z-index:1;width:100%;height:100%;object-fit:cover}
+
+/* Peer and user playlist cards must reserve the cover even when artwork fails.
+   Keeping the hover region also exposes Play for remote playlists. */
+.pltile .covwrap{width:100%;aspect-ratio:1;position:relative}
+.pltile .covlink{width:100%;height:100%;overflow:hidden;display:block;border-radius:10px}
+.pltile .covlink>.owned-cover-image,.pltile .covlink>.owned-cover-fallback,
+.pltile .covlink>.playlist-album-collage,.pltile .covlink>.playlist-cover-empty{width:100%;height:100%;border-radius:inherit}
+.pltile .covlink .playlist-cover{display:block;width:100%;height:100%;object-fit:cover}
+.pltile:hover .fab,.pltile:focus-within .fab{opacity:1;transform:none}
+.pltile .fab:focus-visible{outline:2px solid var(--accent);outline-offset:3px}

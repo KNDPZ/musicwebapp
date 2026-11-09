@@ -3,7 +3,7 @@ Requires Python Playwright and a Chromium binary. Run: python tests/ui_smoke.py
 """
 from pathlib import Path
 from playwright.sync_api import sync_playwright
-import json,re
+import json,re,base64
 
 ROOT=Path(__file__).resolve().parents[1]
 PUBLIC=ROOT/'public'
@@ -32,11 +32,11 @@ window.fetch=async function(input,opts={}){
   let data,status=200;
   if(m==='GET'){
     if(u.startsWith('https://peer.example/api/tracks'))data=[{id:'t1',title:'Remote Same-ID Song',artist:'Remote Artist',artists:['Remote Artist'],album:'Remote Album',duration:222,created_at:2}];
-    else if(u.startsWith('https://peer.example/api/playlists'))data=[{id:'remote1',name:'Remote Radio',tracks:['t1'],cover_v:0}];
-    else if(u.startsWith('https://peer.example/api/user-playlists'))data=[{id:'remote-user',name:'Remote User Mix',tracks:['peer:'+'b'.repeat(64)],username:'peer-user',track_sources:{['peer:'+'b'.repeat(64)]:{origin:'https://other.example',remote_id:'abc',title:'Nested Peer Song',artist:'Third Artist',album:'Third Album',duration:154}}}];
+    else if(u.startsWith('https://peer.example/api/playlists'))data=[{id:'remote1',name:'Remote Radio',tracks:['t1'],cover_v:123}];
+    else if(u.startsWith('https://peer.example/api/user-playlists'))data=[{id:'remote-user',name:'Remote User Mix',tracks:['peer:'+'b'.repeat(64)],username:'peer-user',cover_url:'/art/user-playlist/remote-user?v=77',track_sources:{['peer:'+'b'.repeat(64)]:{origin:'https://other.example',remote_id:'abc',title:'Nested Peer Song',artist:'Third Artist',album:'Third Album',duration:154}}}];
     else if(path==='/api/tracks')data=mock.tracks;
     else if(path==='/api/playlists')data=mock.server;
-    else if(path==='/api/user-playlists')data=[];
+    else if(path==='/api/user-playlists')data=[{id:'pub1',name:'Tester public songs',tracks:['t1','t2'],username:'tester',cover_mode:'mosaic'}];
     else if(path==='/api/user/playlists')data=mock.user;
     else if(path==='/api/network/peers')data=mock.peers;
     else if(path==='/api/entity-reactions')data={};
@@ -64,6 +64,8 @@ window.fetch=async function(input,opts={}){
 with sync_playwright() as pw:
   browser=pw.chromium.launch(headless=True,executable_path='/usr/bin/chromium',args=['--no-sandbox'])
   page=browser.new_page(viewport={'width':1360,'height':850})
+  tiny_png=base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLytQAAAABJRU5ErkJggg==')
+  page.route('https://peer.example/art/**',lambda route:route.fulfill(status=200,body=tiny_png,content_type='image/png'))
   errors=[];page.on('pageerror',lambda err:errors.append(str(err)))
   page.goto('about:blank')
   page.set_content(html)
@@ -117,11 +119,24 @@ with sync_playwright() as pw:
   page.locator('#msgOk').click()
   page.evaluate("window.__mock.peers=[{url:'https://peer.example',name:'Peer'}]")
   page.evaluate('load()')
+  page.evaluate('location.hash="#playlists/users"')
+  page.get_by_text('by tester · 2 songs').wait_for()
   page.evaluate('location.hash="#playlists/peer"')
   page.locator('a[href*="remote1"]').first.wait_for()
+  assert page.locator('.pltile').count()==2
+  assert page.locator('.pltile').first.locator('img.playlist-cover').get_attribute('src')=='https://peer.example/art/playlist?id=remote1&v=123', 'remote server playlist custom cover missing from card'
+  assert page.locator('.pltile').nth(1).locator('img.playlist-cover').get_attribute('src')=='https://peer.example/art/user-playlist/remote-user?v=77', 'remote user playlist cover missing from peer card'
+  assert page.evaluate("playlistCoverUrl({id:'https://peer.example|remote1',origin:'https://peer.example',kind:'server',cover_v:123})")=='https://peer.example/art/playlist?id=remote1&v=123', 'peer server custom cover URL did not resolve to source host'
+  assert page.evaluate("playlistCoverUrl({id:'https://peer.example|remote-user',origin:'https://peer.example',kind:'user',cover_url:'/art/user-playlist/remote-user?v=77'})")=='https://peer.example/art/user-playlist/remote-user?v=77', 'peer user custom cover URL did not resolve to source host'
+  image=page.locator('.pltile').first
+  image.hover()
+  page.wait_for_timeout(250) # CSS opacity transition
+  assert float(image.locator('.fab').evaluate('(el)=>getComputedStyle(el).opacity'))>0.9, 'peer playlist play button did not appear on hover'
+  image.locator('.fab').click()
+  assert page.locator('#audio').get_attribute('src')=='https://peer.example/audio/t1', 'peer playlist play did not stream from peer host'
   page.evaluate("location.hash='#playlist/'+encodeURIComponent('https://peer.example|remote1')")
-  page.get_by_text('Remote Same-ID Song').wait_for(timeout=7000)
-  page.locator('[data-id="https://peer.example|t1"]').click()
+  page.locator('button.row[data-id="https://peer.example|t1"]').wait_for(timeout=7000)
+  page.locator('button.row[data-id="https://peer.example|t1"]').click()
   assert page.locator('#audio').get_attribute('src')=='https://peer.example/audio/t1','peer stream must use remote origin + original ID'
   page.evaluate('location.hash="#playlists/peer"')
   page.locator('a[href*="remote-user"]').first.wait_for()
@@ -130,5 +145,5 @@ with sync_playwright() as pw:
   page.locator('[data-id="peer:'+('b'*64)+'"]').click()
   assert page.locator('#audio').get_attribute('src')=='https://other.example/audio/abc','peer-of-peer track must retain actual hosting origin'
   assert not errors,f'JavaScript errors: {errors}'
-  print('PASS: nine-tile cover; Undo/Save; playlist-only delete; themed copy; duplicate-ID peer origin; peer-of-peer playback source')
+  print('PASS: 9-tile cover; staged removal; playlist-only delete; themed copy; public-user counts; remote custom cover resolution; peer hover Play; remote streaming; peer-of-peer playback')
   browser.close()
