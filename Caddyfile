@@ -1,27 +1,20 @@
 # HTTPS front door for the music app (used by the "https" compose profile).
 #
 # All configuration comes from environment variables (see .env.example):
-#   SITE_ADDRESS  Address(es) to listen on. Default: :443 (catch-all — works for any IP or hostname)
-#   DEFAULT_SNI   Fallback name/IP when the client sends no SNI (common with bare IPs).
-#                 Default: localhost. Set this to your public IP or domain for cleaner certs.
+#   SITE_ADDRESS  Address(es) to listen on. Default: :443 (catch-all)
+#   DEFAULT_SNI   Fallback name/IP when the client sends no SNI.
 #   TLS_ARGS      "internal" (default) | "you@example.com" | "/certs/cert.pem /certs/key.pem"
 
 {
-	# Container listens only on 443; host port mapping is done in docker-compose.
-	# Disable automatic redirects so they don’t point at the wrong external port.
 	auto_https disable_redirects
-
-	# Required for bare-IP access (browsers omit SNI). Override via env if you want.
 	default_sni {$DEFAULT_SNI:localhost}
 }
 
-# Catch-all by default so the site matches whatever Host header the user sends
-# (IP, domain, localhost, etc.). Users can override with SITE_ADDRESS in .env.
-{$SITE_ADDRESS::443} {
+# Explicit catch-all. The double-colon form can be mis-parsed, so we use a clearer default.
+:443 {
 	tls {$TLS_ARGS:internal}
 
 	reverse_proxy music-app:8787 {
-		# Forward the real client IP for rate-limiting
 		header_up CF-Connecting-IP {remote_host}
 		flush_interval -1
 	}
