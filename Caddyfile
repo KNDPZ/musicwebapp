@@ -1,26 +1,27 @@
 # HTTPS front door for the music app (used by the "https" compose profile).
 #
-# Configured entirely through environment variables (see .env.example):
-#   SITE_ADDRESS  hostname(s)/IP(s) you browse to, comma separated. Default: localhost
-#   DEFAULT_SNI   the one name/IP to use when the browser sends none. Defaults to SITE_ADDRESS.
-#   TLS_ARGS      "internal"                      -> self-signed cert from Caddy's local CA (default)
-#                 "you@example.com"               -> real Let's Encrypt cert (public domain, port 443 reachable)
-#                 "/certs/cert.pem /certs/key.pem" -> your own certificate files
+# All configuration comes from environment variables (see .env.example):
+#   SITE_ADDRESS  Address(es) to listen on. Default: :443 (catch-all — works for any IP or hostname)
+#   DEFAULT_SNI   Fallback name/IP when the client sends no SNI (common with bare IPs).
+#                 Default: localhost. Set this to your public IP or domain for cleaner certs.
+#   TLS_ARGS      "internal" (default) | "you@example.com" | "/certs/cert.pem /certs/key.pem"
+
 {
-	# The container only listens on 443; the host port is mapped in docker-compose.yml,
-	# so automatic HTTP->HTTPS redirects would point at the wrong port.
+	# Container listens only on 443; host port mapping is done in docker-compose.
+	# Disable automatic redirects so they don’t point at the wrong external port.
 	auto_https disable_redirects
 
-	# Browsers send no server name (SNI) when you visit a bare IP, and inside Docker Caddy can't
-	# infer it from the connection, so the handshake fails. Fall back to this name/IP instead.
+	# Required for bare-IP access (browsers omit SNI). Override via env if you want.
 	default_sni {$DEFAULT_SNI:localhost}
 }
 
-{$SITE_ADDRESS:localhost} {
+# Catch-all by default so the site matches whatever Host header the user sends
+# (IP, domain, localhost, etc.). Users can override with SITE_ADDRESS in .env.
+{$SITE_ADDRESS::443} {
 	tls {$TLS_ARGS:internal}
 
 	reverse_proxy music-app:8787 {
-		# The Worker rate-limits admin logins per client IP via this header.
+		# Forward the real client IP for rate-limiting
 		header_up CF-Connecting-IP {remote_host}
 		flush_interval -1
 	}
