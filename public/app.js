@@ -347,7 +347,7 @@ function renderPage() {
     renderNav("user");renderSub("",null);const el=$("#list");el.innerHTML="Loading playlist…";
     (async()=>{const r=await fetch("/api/user/playlists");if(!r.ok){el.textContent="Sign in required.";return;}const ps=await r.json();const p=ps.find(x=>x.id===dec(arg));if(!p){el.textContent="Playlist not found.";return;}
       const ids=(p.tracks||[]).map(ref=>typeof ref==='object'?(ref.ref||ref.track_id||ref.id):ref);
-      view={ids:ids.filter(id=>byId[id]),label:p.name,pl:p.id};
+      view={ids:ids.filter(id=>byId[id]),label:p.name,pl:p};
       el.innerHTML=`<a class="back" href="#user/${p.is_public?'public':'private'}">← My playlists</a><div class="owned-playlist-header"><div class="playlist-detail-hero"><div class="playlist-detail-cover">${ownedPlaylistCover(p)}</div><h1>${esc(p.name)}</h1><p class="muted">${p.is_public?'Public playlist':'Private playlist'}</p></div><button type="button" class="playlist-cog" id="playlistCog" aria-label="Edit playlist settings" title="Edit playlist">⚙</button><div class="playlist-draft-toolbar" id="playlistDraftToolbar" hidden><button class="btn ghost" type="button" id="playlistUndo" title="Undo the last five removals">↶ Undo</button><button class="btn" type="button" id="playlistCommit">Save changes</button><span class="muted" id="playlistDraftCount"></span></div></div><p role="alert" class="msg err" id="playlistDraftError"></p><div class="playlist-track-list" id="ownedTrackList"></div>`;
       el.querySelector('#playlistCog').onclick=()=>openEditPlaylist(p);
       initOwnedTrackEditor(el,p,ids);
@@ -981,7 +981,24 @@ $("#msgOk").addEventListener("click", () => $("#msgDlg").close());
 const shuffled = (a) => { a = [...a]; for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
 const cur = () => byId[audio.dataset.id];
 
-function startQueue(ids, id, label, pl, kind = "") { queue = [...ids]; qLabel = label; ctxPl = pl; shufKind = kind; play(id); }
+// A playing playlist can come from this server, a public user, or a connected peer.
+// Preserve its playable track references when playback begins: remote IDs are already
+// namespaced by origin, and another server may reuse the same numeric track ID.
+let playlistScope = null;
+function findPlaylist(pl) {
+  if (!pl) return null;
+  if (typeof pl === "object") return pl;
+  return [...playlists, ...peerPlaylists, ...userPublicPlaylists].find(p => p.id === pl) || null;
+}
+function startQueue(ids, id, label, pl, kind = "") {
+  const source = findPlaylist(pl);
+  playlistScope = source ? {
+    id: source.id,
+    name: source.name,
+    ids: ids.filter(trackId => !!byId[trackId]),
+  } : null;
+  queue = [...ids]; qLabel = label; ctxPl = pl; shufKind = kind; play(id);
+}
 const mediaUrl = (t, path) => (t && t.origin ? t.origin : "") + path;
 function play(id) {
   const t = byId[id];
@@ -995,12 +1012,15 @@ function play(id) {
   audio.play().catch(() => {});
   $("#pc").innerHTML = art(albumArt(t), albumName(t) || t.title, "lg");
   $("#pt").textContent = t.title; $("#pa").textContent = artistLine(t) + (albumName(t) ? " · " + albumName(t) : "");
-  if ("mediaSession" in navigator) {
-    const artSrc = albumArt(t);
-    navigator.mediaSession.metadata = new MediaMetadata({
-      title: t.title, artist: artistLine(t), album: albumName(t),
-      artwork: artSrc ? [{ src: artSrc.startsWith("http") ? artSrc : new URL(artSrc, location.href).href }] : [],
-    });
+  if (navigator.mediaSession && typeof MediaMetadata === "function") {
+    // Broken artwork URLs must never interrupt queue updates or playback controls.
+    try {
+      const artSrc = albumArt(t);
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: t.title, artist: artistLine(t), album: albumName(t),
+        artwork: artSrc ? [{ src: artSrc.startsWith("http") ? artSrc : new URL(artSrc, location.href).href }] : [],
+      });
+    } catch (e) { console.warn("Unable to set media-session artwork", e); }
   }
   paintReact(); paintShuffle(); markRows(); renderQueue();
   if (!$("#lyrics").classList.contains("hidden")) loadLyrics();
@@ -1010,18 +1030,29 @@ const step = (d) => { if (queue.length) play(queue[(Math.max(qi, 0) + d + queue.
 function shuffleIn(kind) {
   const t = cur();
   let ids, label;
-  if (kind === "all") { ids = tracks.map((x) => x.id); label = "Shuffling all songs"; }
-  else if (kind === "artist") { if (!t) return; const mine = artistsOf(t); ids = tracks.filter((x) => artistsOf(x).some((a) => mine.includes(a))).map((x) => x.id); label = `Shuffling ${mine.join(", ")}`; }
-  else { const p = playlists.find((x) => x.id === ctxPl); if (!p) return; ids = p.tracks.filter((i) => byId[i]); label = `Shuffling “${p.name}”`; }
+  if (kind === "all") { ids = tracks.map(x => x.id); label = "Shuffling all songs"; }
+  else if (kind === "artist") {
+    if (!t) return;
+    const artists = artistsOf(t);
+    ids = tracks.filter(x => artistsOf(x).some(a => artists.includes(a))).map(x => x.id);
+    label = `Shuffling ${artists.join(", ")}`;
+  } else {
+    // Do not look up peer/user playlists in the server-only playlist array.
+    // Use the exact source-aware playable IDs captured when playback started.
+    if (!playlistScope) return;
+    ids = playlistScope.ids.filter(id => !!byId[id]);
+    label = `Shuffling “${playlistScope.name}”`;
+  }
   if (!ids.length) return;
+  if (kind !== "playlist") { playlistScope = null; ctxPl = null; }
   queue = shuffled(ids); qLabel = label; shufKind = kind; closeShuf();
   if (queue.length > 1 && queue[0] === audio.dataset.id) [queue[0], queue[1]] = [queue[1], queue[0]];
   play(queue[0]);
 }
 function paintShuffle() {
-  const t = cur(), p = playlists.find((x) => x.id === ctxPl);
+  const t = cur(), p = playlistScope;
   $("#sArtist").disabled = !t;
-  $("#sList").disabled = !p;
+  $("#sList").disabled = !(p && p.ids.some(id => !!byId[id]));
   $("#sArtist").title = t ? "" : "Play a song first";
   $("#sList").title = p ? `Random song from “${p.name}”` : "Play a song from a playlist to use this";
   $("#shuf").classList.toggle("on", !!shufKind);

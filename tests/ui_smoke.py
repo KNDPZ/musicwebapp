@@ -74,6 +74,11 @@ with sync_playwright() as pw:
   page.evaluate('(code)=>{(0,eval)(code)}',bundle)
   page.locator('.owned-track-line').first.wait_for(timeout=15000)
   assert page.locator('.owned-track-line').count()==12
+  page.locator('.owned-track-line .row').first.click()
+  assert page.locator('#sList').is_enabled(), 'This playlist must work for private user playlists'
+  page.locator('#shuf').click()
+  page.locator('#sList').click()
+  assert page.locator('#uql').inner_text()=='Shuffling “My playlist”'
   assert page.locator('.playlist-detail-cover .playlist-album-collage img').count()==9
   assert len(page.locator('.playlist-album-collage').first.evaluate('(el)=>getComputedStyle(el).gridTemplateColumns.split(" ")'))==3
   page.locator('.owned-remove').first.click()
@@ -134,6 +139,12 @@ with sync_playwright() as pw:
   assert float(image.locator('.fab').evaluate('(el)=>getComputedStyle(el).opacity'))>0.9, 'peer playlist play button did not appear on hover'
   image.locator('.fab').click()
   assert page.locator('#audio').get_attribute('src')=='https://peer.example/audio/t1', 'peer playlist play did not stream from peer host'
+  assert not page.locator('#sList').is_disabled(), 'This playlist must work for a playing peer playlist'
+  page.locator('#shuf').click()
+  assert page.locator('#sList').is_enabled()
+  page.locator('#sList').click()
+  assert page.locator('#uql').inner_text() == 'Shuffling “Remote Radio”', 'shuffle did not retain peer playlist name'
+  assert page.locator('#audio').get_attribute('src')=='https://peer.example/audio/t1'
   page.evaluate("location.hash='#playlist/'+encodeURIComponent('https://peer.example|remote1')")
   page.locator('button.row[data-id="https://peer.example|t1"]').wait_for(timeout=7000)
   page.locator('button.row[data-id="https://peer.example|t1"]').click()
@@ -144,6 +155,24 @@ with sync_playwright() as pw:
   page.get_by_text('Nested Peer Song').wait_for()
   page.locator('[data-id="peer:'+('b'*64)+'"]').click()
   assert page.locator('#audio').get_attribute('src')=='https://other.example/audio/abc','peer-of-peer track must retain actual hosting origin'
+  assert page.locator('#sList').is_enabled(), 'This playlist must work for peer-of-peer tracks'
+  page.locator('#shuf').click()
+  page.locator('#sList').click()
+  assert page.locator('#uql').inner_text() == 'Shuffling “Remote User Mix”'
+  assert page.locator('#audio').get_attribute('src')=='https://other.example/audio/abc', 'shuffling a remote user playlist lost the third-party origin'
+  # A local server playlist still exposes the same shuffle option.
+  page.evaluate('location.hash="#playlist/server1"')
+  page.locator('button.row[data-id="t1"]').wait_for()
+  page.locator('button.row[data-id="t1"]').click()
+  assert page.locator('#sList').is_enabled(), 'This playlist was disabled for local server playlists'
+  page.locator('#shuf').click()
+  page.locator('#sList').click()
+  assert page.locator('#uql').inner_text() == 'Shuffling “Radio compilation”'
+  assert page.locator('#uplist .qrow').count()==2
+  # Playing a standalone song should not offer a playlist-specific shuffle scope.
+  page.evaluate('location.hash="#recent"')
+  page.locator('#list .song[data-id="t1"]').first.click()
+  assert page.locator('#sList').is_disabled(), 'stale playlist context was retained'
   assert not errors,f'JavaScript errors: {errors}'
-  print('PASS: 9-tile cover; staged removal; playlist-only delete; themed copy; public-user counts; remote custom cover resolution; peer hover Play; remote streaming; peer-of-peer playback')
+  print('PASS: 9-tile cover; staged removal; playlist-only delete; themed copy; public-user counts; remote custom cover resolution; peer hover Play; remote streaming; playlist shuffle (local, peer and peer-of-peer); peer-of-peer playback')
   browser.close()
