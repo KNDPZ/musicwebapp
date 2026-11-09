@@ -355,3 +355,74 @@ body.up-open #lyrics.full{right:340px}
 .admin-account-shortcut{padding:14px 10px 4px}
 .admin-account-pill{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 13px;border-radius:22px;background:var(--panel);color:var(--text);text-decoration:none;font-weight:600;font-size:13px}
 .admin-account-pill:hover{background:var(--accent);color:#111}
+
+/* Playlist artwork and dedicated editor modal */
+.playlist-album-collage{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));grid-template-rows:repeat(3,minmax(0,1fr));height:100%;width:100%;overflow:hidden;background:var(--panel)}
+.playlist-album-collage img{display:block;width:100%;height:100%;min-width:0;min-height:0;object-fit:cover}
+.owned-cover-image,.owned-cover-fallback{display:block;width:100%;height:100%}
+.owned-cover-image[hidden],.owned-cover-fallback[hidden]{display:none!important}
+.playlist-cover-empty{display:grid;place-items:center;width:100%;height:100%;background:var(--panel);color:var(--muted)}
+.playlist-cover-empty svg{width:30%;height:30%}
+.playlist-edit-dialog{box-sizing:border-box;width:min(500px,calc(100vw - 28px));max-height:calc(100dvh - 32px);overflow:auto;padding:0;background:var(--panel);border:1px solid var(--line2);color:var(--text);border-radius:18px}
+.playlist-edit-modal-content{display:flex;flex-direction:column;gap:17px;padding:26px;box-sizing:border-box;min-width:0}
+.playlist-edit-modal-header{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.playlist-edit-modal-header h2{margin:0}
+.playlist-modal-close{border:0;background:transparent;color:var(--muted);font-size:28px;cursor:pointer}
+.playlist-edit-preview{width:140px;aspect-ratio:1;border-radius:12px;overflow:hidden;background:var(--bg);align-self:center}
+.playlist-edit-line{display:flex;justify-content:space-between;align-items:center;gap:12px;min-width:0}
+.playlist-edit-line>div{display:flex;flex-direction:column;gap:3px;min-width:0}
+.playlist-edit-line strong{overflow-wrap:anywhere}
+.playlist-edit-label{font-size:12px;color:var(--muted)}
+.playlist-rename{display:flex;flex-direction:column;gap:8px}
+.playlist-rename.hidden{display:none!important}
+.playlist-edit-modal-content input[type=text],.playlist-rename input{box-sizing:border-box;width:100%;min-width:0;height:44px;padding:10px;border:1px solid var(--line2);border-radius:8px;background:var(--bg);color:var(--text)}
+.playlist-cover-options{border:1px solid var(--line2);padding:13px;border-radius:12px;min-width:0}
+.playlist-cover-options legend{padding:0 5px;font-weight:700;font-size:14px}
+.playlist-choice{display:flex;align-items:center;gap:11px;cursor:pointer}
+.playlist-choice input{accent-color:var(--accent);width:18px;height:18px;flex:none}
+.playlist-choice span{display:flex;flex-direction:column;gap:4px}
+.playlist-choice small,.playlist-cover-note{font-size:12px;color:var(--muted)}
+.playlist-cover-note{margin:10px 0 0}
+.playlist-upload-label{display:flex;flex-direction:column;gap:8px;font-size:14px;font-weight:700}
+.playlist-upload-label input{box-sizing:border-box;max-width:100%;width:100%;padding:11px;border:1px dashed var(--line2);border-radius:10px;background:var(--bg);color:var(--text)}
+.playlist-edit-modal-content .playlist-edit-actions{justify-content:flex-end;margin-top:3px}
+.playlist-edit-modal-content .msg{min-height:0;margin:0}
+
+/* Playlist artwork: exactly nine album-art tiles, like the public playlist cards. */
+.playlist-album-collage{aspect-ratio:1;grid-template-columns:repeat(3,minmax(0,1fr));grid-template-rows:repeat(3,minmax(0,1fr));border-radius:inherit}
+.playlist-detail-cover .playlist-album-collage,.playlist-edit-preview .playlist-album-collage{width:100%;height:100%}
+.playlist-delete-zone{border-top:1px solid var(--line2);padding-top:18px;margin-top:6px}
+.playlist-delete-zone p{margin:0 0 10px}
+.owned-track-line{display:flex;align-items:center;position:relative;gap:4px;min-width:0;border-radius:9px}
+.owned-track-line:nth-child(odd){background:rgba(255,255,255,.018)}
+.owned-track-line:hover{background:var(--panel)}
+.owned-track-line>.row{flex:1;min-width:0}
+.owned-remove{flex:none;width:38px;height:38px;border-radius:50%;background:transparent;border:1px solid transparent;color:var(--muted);font-size:23px;cursor:pointer;margin:0 8px 0 0;display:grid;place-items:center}
+.owned-remove:hover,.owned-remove:focus-visible{border-color:var(--danger);color:var(--danger);background:rgba(255,138,122,.1)}
+.owned-missing-track{padding:17px 12px;flex:1}
+.playlist-draft-toolbar{display:flex;align-items:center;justify-content:flex-end;gap:12px;flex-wrap:wrap;padding:12px 0 14px;position:sticky;top:105px;z-index:4;background:var(--bg)}
+.playlist-draft-toolbar[hidden]{display:none!important}
+.playlist-draft-toolbar .btn{min-height:40px}
+.playlist-draft-toolbar button:disabled{opacity:.45;cursor:not-allowed}
+.playlist-draft-toolbar .muted{margin-right:auto}
+.playlist-copy-form{display:flex;flex-direction:column;gap:17px;min-width:0;padding:27px;max-height:min(85dvh,700px);overflow:auto}
+.playlist-copy-form h2{margin:0}
+.playlist-copy-form .playlist-copy-option{display:flex;align-items:center;gap:10px;cursor:pointer;font-weight:700}
+.playlist-copy-form input[type=radio]{accent-color:var(--accent);width:17px;height:17px}
+.playlist-copy-field{display:flex;flex-direction:column;gap:7px;font-size:14px;font-weight:650;min-width:0}
+.playlist-copy-field input,.playlist-copy-field select{min-height:45px;padding:10px 13px;border:1px solid var(--line2);background:var(--bg);color:var(--text);border-radius:9px;min-width:0;width:100%}
+.playlist-copy-field[hidden]{display:none!important}
+.playlist-copy-form .msg{margin:0;min-height:0}
+@media (max-width:640px){.owned-track-line>.row{grid-template-columns:30px minmax(0,1fr) 42px}.owned-remove{margin-right:0;width:32px;height:32px}.playlist-copy-form{padding:20px}}
+
+/* Undo/Save occupy the space beside the playlist artwork, not permanent form rows. */
+.owned-playlist-header{width:100%;max-width:100%;}
+.owned-playlist-header .playlist-draft-toolbar{position:absolute;top:196px;left:calc(min(250px,60vw) + 14px);width:max-content;max-width:calc(100% - min(250px,60vw) - 14px);background:transparent;padding:0;justify-content:flex-start;gap:9px}
+.owned-playlist-header .playlist-draft-toolbar .muted{order:3;flex-basis:100%;margin-left:3px}
+.owned-remove{margin:0 0 0 6px}
+@media(max-width:760px){.owned-playlist-header .playlist-draft-toolbar{position:static;left:auto;top:auto;margin:8px 0 20px;max-width:100%}.owned-playlist-header .playlist-draft-toolbar .muted{flex-basis:auto}}
+
+.owned-playlist-header .playlist-cog{left:calc(min(250px,60vw) + 12px);right:auto;top:8px}
+.album-grid-tile{position:relative;display:block;min-width:0;min-height:0;overflow:hidden;background:linear-gradient(135deg,#44403b,#25211c);font-style:normal}
+.album-grid-tile::before{content:attr(data-letter);position:absolute;inset:0;display:grid;place-items:center;color:#d3d3c7;font-size:clamp(8px,1.5vw,18px);font-weight:750}
+.playlist-album-collage .album-grid-tile img{position:relative;z-index:1;width:100%;height:100%;object-fit:cover}
