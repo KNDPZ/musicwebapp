@@ -1043,6 +1043,37 @@ async function api(req, env, url, ctx) {
     const { n } = await DB.prepare("SELECT COUNT(*) AS n FROM requests WHERE status = 'active'").first();
     return json({ ok: true, position: n }, 201);
   }
+  // A small, public, read-only snapshot of the currently playing song's
+  // reactions. Browsers poll it for near-real-time counts; no user session is
+  // required and no peer is contacted. Peer identities are scoped by origin.
+  if (path === "/api/reaction-state" && m === "GET") {
+    const visitor=req.headers.get("X-Visitor")||"";
+    const voter=/^[\w-]{8,64}$/.test(visitor)?await sha256(visitor):"";
+    const origin=clean(url.searchParams.get("origin"),250).replace(/\/$/,"");
+    const remoteId=clean(url.searchParams.get("remote_id"),100);
+    const localId=clean(url.searchParams.get("id"),100);
+    let id;
+    if (origin || remoteId) {
+      if (!origin || !/^[\w-]{1,100}$/.test(remoteId)) return json({error:"Invalid peer song."},400);
+      const known=await DB.prepare("SELECT 1 FROM peers WHERE url = ?").bind(origin).first();
+      if (!known) return json({error:"Unknown peer."},404);
+      id="peer-"+await sha256(origin+"\n"+remoteId);
+    } else {
+      if (!/^[\w-]{1,100}$/.test(localId)) return json({error:"Invalid song."},400);
+      const known=await DB.prepare("SELECT 1 FROM tracks WHERE id = ?").bind(localId).first();
+      if (!known) return json({error:"Song unavailable."},404);
+      id=localId;
+    }
+    const counts=await DB.prepare(`SELECT
+      COALESCE(SUM(kind='heart'),0) AS hearts,
+      COALESCE(SUM(kind='like'),0) AS likes,
+      COALESCE(SUM(kind='dislike'),0) AS dislikes,
+      COALESCE(MAX(voter=? AND kind='heart'),0) AS my_heart,
+      COALESCE(MAX(voter=? AND kind='like'),0) AS my_like,
+      COALESCE(MAX(voter=? AND kind='dislike'),0) AS my_dislike
+      FROM reactions WHERE track_id=?`).bind(voter,voter,voter,id).first();
+    return json(counts,200,{"cache-control":"no-store"});
+  }
   // Peer-song reactions are kept in THIS server's D1. A peer's original
   // music, reactions and library are never modified by local listeners.
   if (path === "/api/peer-reactions" && m === "GET") {

@@ -567,7 +567,10 @@ function albumPage(el, artist, album) {
 }
 
 function artistPage(el, name) {
-  const ts = tracks.filter((t) => artistsOf(t).includes(name));
+  // A peer-only artist can also arrive through a public playlist or a copied
+  // track reference, even when deduplication hides its catalogue entry.
+  let ts = tracks.filter((t) => artistsOf(t).some(a=>normalizeRecording(a)===normalizeRecording(name)));
+  if (!ts.length) ts = [...peerTrackLookup.values()].filter((t) => artistsOf(t).some(a=>normalizeRecording(a)===normalizeRecording(name)));
   if (!ts.length) { el.innerHTML = `<a class="back" href="#artists">← All artists</a>` + empty("Artist not found."); noView(); return; }
   const groups = dict();
   ts.forEach((t) => (groups[albumName(t)] ??= []).push(t));
@@ -590,7 +593,20 @@ function artistPage(el, name) {
 let artistView = null;
 const genreLine = (g) => g.slice(0, 3).map((x) => x.replace(/\b\p{L}/gu, (c) => c.toUpperCase())).join(", ");
 const genreCache = {};
-const libNames = () => new Map(tracks.flatMap(artistsOf).map((a) => [a.toLowerCase(), a]));
+// A peer's tracks are playable here, but they are not files hosted by this server.
+// Keep this distinction on both Similar Artists views (including the full page).
+function artistAvailability(name) {
+  const wanted=normalizeRecording(name);
+  const catalogue=[...tracks,...peerTrackLookup.values()];
+  let peer=null;
+  for (const track of catalogue) {
+    const matched=artistsOf(track).find(a=>normalizeRecording(a)===wanted);
+    if (!matched) continue;
+    if (!track.origin) return {kind:"local", name:matched, origin:null};
+    if (!peer) peer={kind:"peer",name:matched,origin:track.origin};
+  }
+  return peer || {kind:"absent",name,origin:null};
+}
 // tabs: Biography first; Lineup only for bands; Similar artists last
 function paintArtist() {
   const v = artistView;
@@ -646,10 +662,13 @@ async function loadLineup(name) {
   paintArtist();
 }
 function simTile(s, big) {
-  const own = libNames().get(s.name.toLowerCase());
-  const image = own ? artistArt(own) : s.image || "";
-  const inner = `${art(image, s.name, "round")}<b>${esc(s.name)}</b><span class="muted">${own ? "In your library" : "Not in the library"}</span>`;
-  return own ? `<a class="${big ? "tile" : "simtile"}" href="#artist/${enc(own)}">${inner}</a>` : `<button type="button" class="${big ? "tile" : "simtile"}" data-req="${esc(s.name)}" title="Request this artist">${inner}</button>`;
+  const available=artistAvailability(s.name);
+  const image = available.kind!=="absent" ? artistArt(available.name,available.origin) : s.image || "";
+  const label=available.kind==="local" ? "In your library" : available.kind==="peer" ? "Peer Library" : "Not in the library";
+  const inner=`${art(image,s.name,"round")}<b>${esc(s.name)}</b><span class="muted">${label}</span>`;
+  return available.kind!=="absent"
+    ? `<a class="${big ? "tile" : "simtile"}" href="#artist/${enc(available.name)}" title="Open ${esc(available.name)}">${inner}</a>`
+    : `<button type="button" class="${big ? "tile" : "simtile"}" data-req="${esc(s.name)}" title="Request this artist">${inner}</button>`;
 }
 async function loadBio(name) {
   let b = null;
@@ -660,12 +679,24 @@ async function loadBio(name) {
   if (b && b.genres && b.genres.length) { genreCache[name] = b.genres; const g = $("#genre"); if (g) g.textContent = " · " + genreLine(b.genres); }
   paintArtist();
 }
+// The full Similar Artists page must use the same Docker peer relay as the
+// artist detail panel. An empty answer is not final: another peer may have a
+// populated recommendation cache even if the first source has none.
+async function fetchSimilarArtists(name) {
+  for (const url of artistInfoEndpoints(name,"/api/similar")) {
+    try {
+      const r=await fetch(url,{signal:AbortSignal.timeout(11000)});
+      if (!r.ok) continue;
+      const items=arr((await r.json()).artists).filter(x=>x&&typeof x.name==="string"&&x.name.trim());
+      if (items.length) return items;
+    } catch { /* retry using the next connected peer */ }
+  }
+  return [];
+}
 async function loadSimilar(name) {
-  let list = [];
-  const data = await fetchArtistInfo(name, "/api/similar");
-  if (data) list = arr(data.artists);
+  const list=await fetchSimilarArtists(name);
   if (!artistView || artistView.name !== name) return;
-  artistView.similar = list;
+  artistView.similar=list;
   paintArtist();
 }
 // the page with every similar artist
@@ -673,11 +704,10 @@ async function similarPage(el, name) {
   noView();
   const back = `<a class="back" href="#artist/${enc(name)}">← Back to artist</a>`;
   el.innerHTML = `${back}<h1 style="margin:0 0 4px">Similar to ${esc(name)}</h1><p class="muted">Loading…</p>`;
-  let list = [];
-  try { const r = await fetch("/api/similar?name=" + enc(name)); if (r.ok) list = arr((await r.json()).artists); } catch {}
+  const list=await fetchSimilarArtists(name);
   const cur = parse();
   if (cur.a !== "similar" || dec(cur.arg) !== name) return;
-  el.innerHTML = `${back}<h1 style="margin:0 0 4px">Similar to ${esc(name)}</h1><p class="muted" style="margin-top:0">${plural(list.length, "artist")}. Artists that are not in the library can be requested.</p>`
+  el.innerHTML = `${back}<h1 style="margin:0 0 4px">Similar to ${esc(name)}</h1><p class="muted" style="margin-top:0">${plural(list.length, "artist")}. Local and peer artists open their artist pages; unavailable artists can be requested.</p>`
     + (list.length ? `<div class="grid">${list.map((s) => simTile(s, true)).join("")}</div>` : empty("No similar artists found."));
 }
 
@@ -1211,6 +1241,35 @@ async function loadPeerReactionCounts(){
  store.set("mine",mine);
  }catch{}
 }
+// Reactions are stored on THIS server for peers and local songs. Refresh the
+// active song without re-fetching the 1,328-track peer catalogue, so votes
+// from other listeners become visible promptly to guests and signed-in users.
+let reactionMutationCount=0;
+let reactionReadSeq=0;
+async function refreshCurrentReaction() {
+  const t=cur();
+  if (!t || reactionMutationCount || document.hidden) return;
+  const isPeer=!!t.origin;
+  const key=isPeer?peerReactionKey(t):t.id;
+  const args=new URLSearchParams(isPeer
+    ? {origin:registeredPeerOrigin(t.origin),remote_id:t.remote_id||String(t.id).split("|").at(-1)}
+    : {id:t.id});
+  const seq=++reactionReadSeq;
+  try {
+    const r=await fetch("/api/reaction-state?"+args,{headers:{"X-Visitor":vid},cache:"no-store"});
+    if (!r.ok) return;
+    const latest=await r.json();
+    const now=cur();
+    if (!now || reactionMutationCount || seq!==reactionReadSeq || (isPeer?peerReactionKey(now):now.id)!==key) return;
+    if (isPeer) peerReactionCounts.set(key,latest);
+    else for(const field of ["hearts","likes","dislikes"]) now[field]=Number(latest[field])||0;
+    mine[key]={heart:!!latest.my_heart,like:!!latest.my_like,dislike:!!latest.my_dislike};
+    store.set("mine",mine);
+    paintReact();
+  } catch { /* keep the last known counts if temporarily offline */ }
+}
+setInterval(refreshCurrentReaction,10000);
+document.addEventListener("visibilitychange",()=>{if(!document.hidden)refreshCurrentReaction();});
 // ---------- reactions ----------
 function paintReact() {
   const t=cur(),remote=!!t?.origin;
@@ -1227,6 +1286,8 @@ function paintReact() {
 }
 async function react(kind) {
   const t=cur();if(!t)return;
+  reactionMutationCount++;
+  reactionReadSeq++; // ignore an older refresh racing with the user's click
   const remote=!!t.origin,key=remote?peerReactionKey(t):t.id;
   const m=(mine[key]??={}),prior={...m};
   const counts=remote?(peerReactionCounts.get(key)||{hearts:0,likes:0,dislikes:0}):t;
@@ -1246,6 +1307,7 @@ async function react(kind) {
     const saved=await r.json();
     if(remote){peerReactionCounts.set(key,saved);}else Object.assign(t,saved);
   }catch{mine[key]=prior;if(remote)peerReactionCounts.set(key,priorCounts);else Object.assign(t,priorCounts);store.set("mine",mine);popup("Couldn't save reaction","Please try again.");}
+  finally {reactionMutationCount=Math.max(0,reactionMutationCount-1);}
   paintReact();
 }
 $("#bh").addEventListener("click", () => react("heart"));
