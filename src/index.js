@@ -81,6 +81,8 @@ function init(env) {
       "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
       "CREATE TABLE IF NOT EXISTS spotify_credentials (id INTEGER PRIMARY KEY CHECK (id = 1), client_id TEXT NOT NULL, secret_cipher TEXT NOT NULL, updated_at INTEGER NOT NULL)",
       "CREATE TABLE IF NOT EXISTS entity_reactions (kind TEXT NOT NULL, entity TEXT NOT NULL, voter TEXT NOT NULL, reaction TEXT NOT NULL, PRIMARY KEY (kind, entity, voter, reaction))",
+      // Non-destructive snapshot for peer playlists receiving local votes.
+      "CREATE TABLE IF NOT EXISTS voted_playlist_cache (id TEXT PRIMARY KEY, origin TEXT NOT NULL DEFAULT '', name TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'server', cover_url TEXT NOT NULL DEFAULT '', username TEXT NOT NULL DEFAULT '', track_count INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL)",
       "CREATE TABLE IF NOT EXISTS artist_similar (name TEXT PRIMARY KEY, list TEXT NOT NULL, fetched_at INTEGER NOT NULL)",
       "CREATE TABLE IF NOT EXISTS artist_info (name TEXT PRIMARY KEY, text TEXT, url TEXT, wtitle TEXT, rev TEXT, genres TEXT NOT NULL DEFAULT '[]', checked_at INTEGER NOT NULL)",
       `CREATE TABLE IF NOT EXISTS requests (
@@ -128,6 +130,9 @@ function init(env) {
       console.error("idx_tracks_hash skipped (likely duplicate hashes):", e.message);
     }
     try { await q("CREATE INDEX IF NOT EXISTS idx_reactions_track ON reactions(track_id)").run(); } catch {}
+    // Preserve existing one-way playlist hearts in the unified local charts.
+    // Namespaced voters avoid collisions with SHA-256 visitor IDs.
+    try { await q("INSERT OR IGNORE INTO entity_reactions(kind,entity,voter,reaction) SELECT 'playlist', playlist_id, 'legacy:' || voter, 'heart' FROM playlist_hearts").run(); } catch {}
   })().catch((e) => { ready = undefined; throw e; }));
 }
 
@@ -224,9 +229,9 @@ function artistsOfRow(r) {
   return splitArtists(r.artist);
 }
 async function libraryHasArtist(DB, name, album = null) {
-  const sql = `SELECT artist, artists FROM tracks WHERE (instr(artist, ?1) > 0 OR instr(COALESCE(artists, ''), ?1) > 0)${album === null ? "" : " AND album = ?2"} LIMIT 200`;
+  const sql = `SELECT artist, artists FROM tracks WHERE (instr(artist, ?) > 0 OR instr(COALESCE(artists, ''), ?) > 0)${album === null ? "" : " AND album = ?"} LIMIT 200`;
   const st = DB.prepare(sql);
-  const rows = (await (album === null ? st.bind(name) : st.bind(name, album)).all()).results;
+  const rows = (await (album === null ? st.bind(name, name) : st.bind(name, name, album)).all()).results;
   return rows.some((r) => artistsOfRow(r).includes(name));
 }
 
@@ -938,40 +943,82 @@ async function api(req, env, url, ctx) {
     const b=await req.json().catch(()=>({})), id=clean(b.id,220);
     if(!id)return json({error:"Playlist required."},400);
     const visitor=getCookie(req,"riffvault_heart") || crypto.randomUUID();
-    await DB.prepare("INSERT OR IGNORE INTO playlist_hearts (playlist_id,voter) VALUES (?,?)").bind(id,visitor).run();
-    const row=await DB.prepare("SELECT COUNT(*) AS n FROM playlist_hearts WHERE playlist_id = ?").bind(id).first();
+    await DB.batch([
+      DB.prepare("INSERT OR IGNORE INTO playlist_hearts (playlist_id,voter) VALUES (?,?)").bind(id,visitor),
+      DB.prepare("INSERT OR IGNORE INTO entity_reactions(kind,entity,voter,reaction) VALUES ('playlist',?,?,'heart')").bind(id,'legacy:'+visitor)
+    ]);
+    const row=await DB.prepare("SELECT COUNT(*) AS n FROM entity_reactions WHERE kind='playlist' AND entity=? AND reaction='heart'").bind(id).first();
     return json({hearts:row.n},200,{"set-cookie":`riffvault_heart=${visitor}; Path=/; SameSite=Lax; Max-Age=31536000`});
   }
   if (path === "/api/site" && m === "GET") return json(await siteSettings(DB));
   if (path === "/api/entity-reactions" && m === "GET") {
     try {
       const { results } = await DB.prepare(`SELECT kind, entity, COALESCE(SUM(reaction = 'heart'), 0) AS hearts, COALESCE(SUM(reaction = 'like'), 0) AS likes, COALESCE(SUM(reaction = 'dislike'), 0) AS dislikes FROM entity_reactions GROUP BY kind, entity`).all();
-      const out = { artist: Object.create(null), playlist: Object.create(null) };
+      const out = { artist: Object.create(null), playlist: Object.create(null), playlist_meta: [] };
       for (const r of results) if (out[r.kind]) out[r.kind][r.entity] = { hearts: r.hearts, likes: r.likes, dislikes: r.dislikes };
+      out.playlist_meta = (await DB.prepare("SELECT id,origin,name,kind,cover_url,username,track_count FROM voted_playlist_cache").all()).results;
       return json(out, 200, { "cache-control": "no-cache" });
     } catch {
-      // Table may not exist yet on a partial upgrade; never take the site down.
-      return json({ artist: {}, playlist: {} }, 200, { "cache-control": "no-cache" });
+      return json({ artist: {}, playlist: {}, playlist_meta: [] }, 200, { "cache-control": "no-cache" });
     }
   }
   if (path === "/api/react-entity" && m === "POST") {
     const b = await req.json().catch(() => ({}));
     const vid = req.headers.get("X-Visitor") || "";
-    const type = b.type, key = clean(b.key, 200), kind = b.kind;
+    const type = b.type, key = clean(b.key, 512), kind = b.kind;
     if (!/^[\w-]{8,64}$/.test(vid) || !["artist", "playlist"].includes(type) || !key || !["heart", "like", "dislike"].includes(kind)) return json({ error: "Bad request." }, 400);
-    const exists = type === "artist" ? await libraryHasArtist(DB, key) : !!(await DB.prepare("SELECT 1 FROM playlists WHERE id = ?").bind(key).first());
-    if (!exists) return json({ error: "Not found." }, 404);
+    const origin = clean(b.origin, 250).replace(/\/$/, "");
+    let trustedRemote = false;
+    if (origin) {
+      try { const u=new URL(origin);if(!["http:","https:"].includes(u.protocol)||u.href.replace(/\/$/,"")!==origin) return json({error:"Invalid peer."},400); }
+      catch { return json({error:"Invalid peer."},400); }
+      trustedRemote = !!(await DB.prepare("SELECT 1 FROM peers WHERE url = ?").bind(origin).first());
+    }
+    if (type === "artist") {
+      const local = await libraryHasArtist(DB, key);
+      // Peer-only artists can receive votes on this server, but the source
+      // must be a configured peer. Voting never alters the source peer.
+      if (!local && !trustedRemote) return json({ error: "Artist not found on this server or a connected peer." }, 404);
+    } else {
+      const managed=await DB.prepare("SELECT 1 FROM playlists WHERE id = ?").bind(key).first();
+      const user=await DB.prepare("SELECT user_id,is_public FROM user_playlists WHERE id = ?").bind(key).first();
+      const sessionUser=user ? await sessionInfo(req,env) : null;
+      const owned=!!user && (user.is_public || (sessionUser && (sessionUser.role==='admin' || sessionUser.user_id===user.user_id)));
+      const remoteId=trustedRemote && key.startsWith(origin+'|') ? key.slice(origin.length+1) : '';
+      const validPeer=!!remoteId && /^[\w-]{1,128}$/.test(remoteId);
+      if (!managed && !owned && !validPeer) return json({ error: "Playlist not found on this server or a connected peer." }, 404);
+      if (validPeer) {
+        const name=clean(b.name,180)||'Peer playlist';
+        const kind=b.playlist_kind==='user'?'user':'server';
+        let cover='';
+        const candidate=clean(b.cover_url,1000);
+        try {
+          if (!candidate) throw new Error('No cover URL');
+          const url=new URL(candidate,origin+'/');
+          // Remote peer artwork must come from the registered source or be
+          // proxied on this server; reject untrusted arbitrary destinations.
+          if(url.origin===origin && ['https:','http:'].includes(url.protocol))cover=url.href.slice(0,1000);
+          else if(candidate.startsWith('/_peer/'))cover=candidate.slice(0,1000);
+        } catch {}
+        await DB.prepare(`INSERT INTO voted_playlist_cache(id,origin,name,kind,cover_url,username,track_count,updated_at)
+          VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+          name=excluded.name,kind=excluded.kind,cover_url=CASE WHEN excluded.cover_url!='' THEN excluded.cover_url ELSE voted_playlist_cache.cover_url END,
+          username=excluded.username,track_count=excluded.track_count,updated_at=excluded.updated_at`)
+          .bind(key,origin,name,kind,cover,clean(b.username,64),Math.max(0,Math.min(100000,Number(b.track_count)||0)),Date.now()).run();
+      }
+    }
     const voter = await sha256(vid), stmts = [];
+    if (b.on === true) {
+      stmts.push(DB.prepare("INSERT OR IGNORE INTO entity_reactions (kind, entity, voter, reaction) VALUES (?,?,?,?)").bind(type, key, voter, kind));
+      const other = kind === "like" ? "dislike" : kind === "dislike" ? "like" : null;
+      if (other) stmts.push(DB.prepare("DELETE FROM entity_reactions WHERE kind = ? AND entity = ? AND voter = ? AND reaction = ?").bind(type, key, voter, other));
+    } else stmts.push(DB.prepare("DELETE FROM entity_reactions WHERE kind = ? AND entity = ? AND voter = ? AND reaction = ?").bind(type, key, voter, kind));
     try {
-      if (b.on) {
-        stmts.push(DB.prepare("INSERT OR IGNORE INTO entity_reactions (kind, entity, voter, reaction) VALUES (?,?,?,?)").bind(type, key, voter, kind));
-        const other = kind === "like" ? "dislike" : kind === "dislike" ? "like" : null;
-        if (other) stmts.push(DB.prepare("DELETE FROM entity_reactions WHERE kind = ? AND entity = ? AND voter = ? AND reaction = ?").bind(type, key, voter, other));
-      } else stmts.push(DB.prepare("DELETE FROM entity_reactions WHERE kind = ? AND entity = ? AND voter = ? AND reaction = ?").bind(type, key, voter, kind));
       await DB.batch(stmts);
       return json(await DB.prepare(`SELECT COALESCE(SUM(reaction = 'heart'), 0) AS hearts, COALESCE(SUM(reaction = 'like'), 0) AS likes, COALESCE(SUM(reaction = 'dislike'), 0) AS dislikes FROM entity_reactions WHERE kind = ? AND entity = ?`).bind(type, key).first());
-    } catch {
-      return json({ hearts: 0, likes: 0, dislikes: 0 });
+    } catch (e) {
+      console.error('reaction persistence failed:',e);
+      return json({error:'Could not save reaction. Please retry.'},500);
     }
   }
   if (path === "/api/lineup" && m === "GET") { // pictures of the band members (looked up once, then saved)

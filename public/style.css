@@ -473,3 +473,11 @@ body.up-open #lyrics.full{right:340px}
 .spotify-config-form .msg{min-height:0;margin:0}
 .spotify-config-footnote{margin:24px 0 0;max-width:680px;line-height:1.6}
 #reqSpotifyPanel>.card{max-width:780px}
+
+/* WASP v13: unified playlist heart, like and dislike controls. */
+.playlist-detail-actions{align-items:center}
+.playlist-ratings{margin-left:0;gap:12px;flex-wrap:wrap}
+.playlist-ratings .rc{gap:6px}
+.playlist-ratings .playlist-heart{min-height:44px;white-space:nowrap}
+.playlist-ratings .playlist-heart.on{color:var(--accent);border-color:var(--accent)}
+.playlist-ratings small{min-width:1ch}

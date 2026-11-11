@@ -239,6 +239,7 @@ async function load() {
   }));
   const [t, p, s, en] = results;
   entity = { artist: (en.data && en.data.artist) || {}, playlist: (en.data && en.data.playlist) || {} };
+  ratedPlaylistCache = arr(en.data?.playlist_meta);
   tracks = arr(t.data); playlists = arr(p.data);
   try {const r=await fetch("/api/user-playlists");if(r.ok)userPublicPlaylists=arr(await r.json());}catch{}
   peerPlaylists=[];
@@ -353,6 +354,8 @@ const songTiles = (l, extra) => `<div class="grid s">${l.map((t) =>
   `<button class="tile sq song" data-id="${esc(t.id)}">${art(albumArt(t), albumName(t) || t.title)}<b>${esc(t.title)}</b><span class="muted">${esc(artistLine(t))}</span>${extra ? `<span class="muted">${esc(extra(t))}</span>` : ""}</button>`).join("")}</div>`;
 const empty = (msg) => `<div class="empty">${msg}</div>`;
 let entity = { artist: {}, playlist: {} };
+let ratedPlaylistCache = []; // Locally voted peer playlists remain listed when a peer is offline.
+const ownedPlaylistIndex = new Map(); // Private playlist data is only available to the owner.
 const ecount = (type, key) => (entity[type] && has(entity[type], key) ? entity[type][key] : { hearts: 0, likes: 0, dislikes: 0 });
 function reactCircles(type, key) {
   const c = ecount(type, key), m = mine[type[0] + ":" + key] || {};
@@ -361,18 +364,29 @@ function reactCircles(type, key) {
 }
 async function reactEntity(type, key, kind) {
   const mk = type[0] + ":" + key, m = (mine[mk] ??= {}), on = !m[kind];
+  const previousMine={...m},previousCounts={...ecount(type,key)};
   if (!has(entity[type], key)) entity[type][key] = { hearts: 0, likes: 0, dislikes: 0 };
   const c = entity[type][key], f = { heart: "hearts", like: "likes", dislike: "dislikes" };
   m[kind] = on; c[f[kind]] = Math.max(0, c[f[kind]] + (on ? 1 : -1));
   const other = kind === "like" ? "dislike" : kind === "dislike" ? "like" : null;
   if (on && other && m[other]) { m[other] = false; c[f[other]] = Math.max(0, c[f[other]] - 1); }
   store.set("mine", mine);
-  const repaint = () => { const el = [...document.querySelectorAll("#list .rcircles")].find((x) => x.dataset.type === type && x.dataset.key === key); if (el) { el.outerHTML = reactCircles(type, key); const b = [...document.querySelectorAll("#list [data-ent]")].find((x) => x.dataset.ent === type && x.dataset.key === key && x.dataset.r === kind); if (b) b.focus(); } };
+  const repaint = () => { const el = [...document.querySelectorAll("#list .rcircles")].find((x) => x.dataset.type === type && x.dataset.key === key); if (el) { const p = type === 'playlist' ? lookupReactedPlaylist(key) : null; el.outerHTML = el.classList.contains('playlist-ratings') && p ? playlistReactControls(p) : reactCircles(type, key); const b = [...document.querySelectorAll("#list [data-ent]")].find((x) => x.dataset.ent === type && x.dataset.key === key && x.dataset.r === kind); if (b) b.focus(); } };
   repaint();
   try {
-    const r = await fetch("/api/react-entity", { method: "POST", headers: { "content-type": "application/json", "X-Visitor": vid }, body: JSON.stringify({ type, key, kind, on }) });
-    if (r.ok) { Object.assign(c, await r.json()); repaint(); }
-  } catch {}
+    const playlist=type==='playlist' ? lookupReactedPlaylist(key) : null;
+    const remoteArtist=type==='artist' ? tracks.find(t=>t.origin&&artistsOf(t).some(n=>n.toLowerCase()===key.toLowerCase())) : null;
+    const extra=playlist ? {origin:registeredPeerOrigin(playlist.origin||''),name:playlist.name,
+      cover_url:playlist.cover_url||'',playlist_kind:playlist.kind||'server',username:playlist.username||'',
+      track_count:arr(playlist.tracks).length} : remoteArtist ? {origin:registeredPeerOrigin(remoteArtist.origin)} : {};
+    const r = await fetch("/api/react-entity", { method: "POST", headers: { "content-type": "application/json", "X-Visitor": vid }, body: JSON.stringify({ type, key, kind, on, ...extra }) });
+    if (!r.ok) { const j=await r.json().catch(()=>({}));throw Error(j.error||'Could not save reaction.'); }
+    Object.assign(c, await r.json()); repaint();
+  } catch (e) {
+    // A failed vote must not remain in the UI or localStorage as a phantom vote.
+    Object.assign(m, previousMine);Object.assign(c, previousCounts);store.set('mine',mine);repaint();
+    popup('Reaction not saved',e.message||'Please try again.');
+  }
 }
 const actions = (radio, ent) => `<div class="form" style="margin:12px 0"><button class="btn" data-act="play">Play</button><button class="btn ghost" data-act="shuf">Shuffle</button>${radio ? `<button class="btn ghost" data-act="radio" title="Songs from the same genre, to discover more music"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-radio"/></svg>Radio</button>` : ""}${ent ? reactCircles(ent.type, ent.key) : ""}</div>`;
 const noView = () => { view = { ids: [], label: "", pl: null }; };
@@ -399,10 +413,10 @@ function renderPage() {
   }
   if(a==="userplaylist"){
     renderNav("user");renderSub("",null);const el=$("#list");el.innerHTML="Loading playlist…";
-    (async()=>{const r=await fetch("/api/user/playlists");if(!r.ok){el.textContent="Sign in required.";return;}const ps=await r.json();const p=ps.find(x=>x.id===dec(arg));if(!p){el.textContent="Playlist not found.";return;}
+    (async()=>{const r=await fetch("/api/user/playlists");if(!r.ok){el.textContent="Sign in required.";return;}const ps=await r.json();for(const candidate of ps)ownedPlaylistIndex.set(candidate.id,candidate);const p=ps.find(x=>x.id===dec(arg));if(!p){el.textContent="Playlist not found.";return;}
       const ids=(p.tracks||[]).map(ref=>typeof ref==='object'?(ref.ref||ref.track_id||ref.id):ref);
       view={ids:ids.filter(id=>byId[id]),label:p.name,pl:p};
-      el.innerHTML=`<a class="back" href="#user/${p.is_public?'public':'private'}">← My playlists</a><div class="owned-playlist-header"><div class="playlist-detail-hero"><div class="playlist-detail-cover">${ownedPlaylistCover(p)}</div><h1>${esc(p.name)}</h1><p class="muted">${p.is_public?'Public playlist':'Private playlist'}</p></div><button type="button" class="playlist-cog" id="playlistCog" aria-label="Edit playlist settings" title="Edit playlist">⚙</button><div class="playlist-draft-toolbar" id="playlistDraftToolbar" hidden><button class="btn ghost" type="button" id="playlistUndo" title="Undo the last five removals">↶ Undo</button><button class="btn" type="button" id="playlistCommit">Save changes</button><span class="muted" id="playlistDraftCount"></span></div></div><p role="alert" class="msg err" id="playlistDraftError"></p><div class="playlist-track-list" id="ownedTrackList"></div>`;
+      el.innerHTML=`<a class="back" href="#user/${p.is_public?'public':'private'}">← My playlists</a><div class="owned-playlist-header"><div class="playlist-detail-hero"><div class="playlist-detail-cover">${ownedPlaylistCover(p)}</div><h1>${esc(p.name)}</h1><p class="muted">${p.is_public?'Public playlist':'Private playlist'}</p><div class="playlist-detail-actions">${playlistReactControls(p)}</div></div><button type="button" class="playlist-cog" id="playlistCog" aria-label="Edit playlist settings" title="Edit playlist">⚙</button><div class="playlist-draft-toolbar" id="playlistDraftToolbar" hidden><button class="btn ghost" type="button" id="playlistUndo" title="Undo the last five removals">↶ Undo</button><button class="btn" type="button" id="playlistCommit">Save changes</button><span class="muted" id="playlistDraftCount"></span></div></div><p role="alert" class="msg err" id="playlistDraftError"></p><div class="playlist-track-list" id="ownedTrackList"></div>`;
       el.querySelector('#playlistCog').onclick=()=>openEditPlaylist(p);
       initOwnedTrackEditor(el,p,ids);
     })();return;
@@ -418,7 +432,12 @@ function renderPage() {
   if (tab === "request") { if (sub === "new") requestForm(el); else if (sub === "previous") requestPrevious(el, arg.split("/")[1]); else requestQueue(el); return; }
   // Reaction charts may contain locally cached peer songs even if the remote
   // catalogue is temporarily offline (and this installation has no uploads).
-  if (!tracks.length && !(RX.includes(tab) && sub === "songs" && peerReactionTracks.size)) {
+  const hasChartData = RX.includes(tab) && (
+    (sub === 'songs' && peerReactionTracks.size) ||
+    (sub === 'artists' && Object.keys(entity.artist).length) ||
+    (sub === 'playlists' && (ratedPlaylistCache.length || playlists.length || peerPlaylists.length || userPublicPlaylists.length))
+  );
+  if (!tracks.length && !hasChartData) {
     el.innerHTML = loadError ? errorBox("The music library couldn't be loaded.", loadError) : empty("No music yet. Check back soon."); noView(); return;
   }
   if (a === "artist") artistPage(el, dec(arg));
@@ -909,17 +928,28 @@ function playlistGrid(el, recent) {
 
 // Most hearted / liked / disliked: artists and playlists
 function reactedArtists(el, tab) {
-  const own = libNames();
+  // Entity reactions are local to this WASP host and may refer to artists
+  // from connected peers. Do not require a local track or the removed libNames helper.
   const rows = Object.keys(entity.artist).map((n) => ({ n, c: entity.artist[n][tab] || 0 }))
-    .filter((x) => x.c > 0 && own.has(x.n.toLowerCase()) && (!query || x.n.toLowerCase().includes(query)))
+    .filter((x) => x.c > 0 && (!query || x.n.toLowerCase().includes(query)))
     .sort((x, y) => y.c - x.c || x.n.localeCompare(y.n)).slice(0, LIMIT[tab]);
   noView();
   el.innerHTML = rows.length ? `<p class="muted" style="margin:0 0 12px">Top ${LIMIT[tab]} ${TABS[tab].toLowerCase()} artists</p><div class="grid">${rows.map((x) =>
     `<a class="tile" href="#artist/${enc(x.n)}">${art(artistArt(x.n), x.n)}<b>${esc(x.n)}</b><span class="muted">${plural(x.c, tab.slice(0, -1))}</span></a>`).join("")}</div>`
     : empty("Nothing here yet. Artists show up once someone reacts to them on their page.");
 }
+function allRatedPlaylists() {
+  const all = new Map();
+  // Prefer currently available playlists for accurate artwork and playback links.
+  for (const p of ratedPlaylistCache) if (p?.id) all.set(p.id, { ...p, tracks: arr(p.tracks) });
+  for (const p of [...playlists, ...userPublicPlaylists, ...peerPlaylists]) if (p?.id) all.set(p.id, p);
+  return [...all.values()];
+}
+function lookupReactedPlaylist(key) {
+  return ownedPlaylistIndex.get(key) || allRatedPlaylists().find(p=>p.id===key);
+}
 function reactedPlaylists(el, tab) {
-  const rows = playlists.map((p) => ({ p, c: ecount("playlist", p.id)[tab] || 0 }))
+  const rows = allRatedPlaylists().map((p) => ({ p, c: ecount("playlist", p.id)[tab] || 0 }))
     .filter((x) => x.c > 0 && (!query || x.p.name.toLowerCase().includes(query)))
     .sort((x, y) => y.c - x.c || x.p.name.localeCompare(y.p.name)).slice(0, LIMIT[tab]);
   noView();
@@ -927,17 +957,26 @@ function reactedPlaylists(el, tab) {
     : empty("Nothing here yet. Playlists show up once someone reacts to them on their page.");
 }
 
+// On playlist detail pages keep the original Heart icon + word, with
+// icon-only thumbs-up and thumbs-down. All votes belong to this server.
+function playlistReactControls(p) {
+  const type="playlist", key=p.id, c=ecount(type,key),m=mine["p:"+key]||{};
+  const heart=`<span class="rc"><button type="button" class="btn ghost playlist-heart${m.heart?' on':''}" data-ent="playlist" data-key="${esc(key)}" data-r="heart" aria-label="Heart playlist" aria-pressed="${!!m.heart}">${m.heart?'♥':'♡'} Heart</button><small>${c.hearts||0}</small></span>`;
+  const reaction=(kind,icon,label,field)=>`<span class="rc"><button type="button" class="circ tip${m[kind]?' on':''}" data-ent="playlist" data-key="${esc(key)}" data-r="${kind}" data-tip="${label}" title="${label} playlist" aria-label="${label} playlist" aria-pressed="${!!m[kind]}"><svg><use href="#${icon}"/></svg></button><small>${c[field]||0}</small></span>`;
+  return `<span class="rcircles playlist-ratings" role="group" aria-label="Rate this playlist" data-type="playlist" data-key="${esc(key)}">${heart}${reaction('like','i-up','Like','likes')}${reaction('dislike','i-down','Dislike','dislikes')}</span>`;
+}
+
 function playlistHero(p,ids,subtitle){
  // Use the same source-aware cover and failure fallback as playlist cards.
  const cover=mosaic(p);
- return `<div class="playlist-detail-hero"><div class="playlist-detail-cover">${cover}</div><h1>${esc(p.name)}</h1><p class="muted">${esc(subtitle)}</p><div class="playlist-detail-actions"><button class="btn ghost playlist-heart" data-heart-playlist="${esc(p.id)}" title="Heart this playlist" aria-label="Heart playlist">♡ Heart</button><button class="btn playlist-copy" data-copy-playlist="${esc(p.id)}" title="Copy playlist to your account" aria-label="Copy playlist">＋ Copy to my playlists</button></div></div>`;
+ return `<div class="playlist-detail-hero"><div class="playlist-detail-cover">${cover}</div><h1>${esc(p.name)}</h1><p class="muted">${esc(subtitle)}</p><div class="playlist-detail-actions">${playlistReactControls(p)}<button class="btn playlist-copy" data-copy-playlist="${esc(p.id)}" title="Copy playlist to your account" aria-label="Copy playlist">＋ Copy to my playlists</button></div></div>`;
 }
 function playlistPage(el, id) {
-  const remote=peerPlaylists.find(p=>p.id===id);
-  const user=userPublicPlaylists.find(p=>p.id===id);
+  const remote=peerPlaylists.find(p=>p.id===id) || ratedPlaylistCache.find(p=>p.id===id && p.origin);
+  const user=userPublicPlaylists.find(p=>p.id===id) || ratedPlaylistCache.find(p=>p.id===id && p.kind==='user');
   if(remote||user){
     const p=remote||user;
-    const ids=p.tracks.map(i=>{if(!remote)return i;const raw=String(i);if(raw.startsWith("peer:"))return raw;const remoteId=raw.startsWith(p.origin+"|")?raw.slice(p.origin.length+1):raw;return byId[p.origin+"|"+remoteId]?p.origin+"|"+remoteId:remoteId;}).filter(i=>byId[i]);
+    const ids=arr(p.tracks).map(i=>{if(!remote)return i;const raw=String(i);if(raw.startsWith("peer:"))return raw;const remoteId=raw.startsWith(p.origin+"|")?raw.slice(p.origin.length+1):raw;return byId[p.origin+"|"+remoteId]?p.origin+"|"+remoteId:remoteId;}).filter(i=>byId[i]);
     noView();
     el.innerHTML=`<a class="back" href="#playlists/${remote?"peer":"users"}">← Playlists</a>${playlistHero(p,ids,remote?"Peer playlist":"Public user playlist")}${ids.map((i,n)=>row(byId[i],n+1)).join("")||empty("Songs are not available from this server.")}`;
     view={ids,label:p.name,pl:p};return;
@@ -1327,6 +1366,8 @@ setInterval(async()=>{
   if(document.hidden || !RX.includes(parse().a) || reactionMutationCount) return;
   try {
     await loadPeerReactionCounts();
+    const e=await fetch("/api/entity-reactions",{cache:"no-store"});
+    if(e.ok){const data=await e.json();entity={artist:data.artist||{},playlist:data.playlist||{}};ratedPlaylistCache=arr(data.playlist_meta);}
     const r=await fetch("/api/tracks",{cache:"no-store"});
     if(r.ok){
       const updates=new Map((await r.json()).map(t=>[t.id,t]));
@@ -1675,7 +1716,6 @@ async function openPlaylistCopy(p){
 }
 
 document.addEventListener("click",async e=>{
-  const heart=e.target.closest("[data-heart-playlist]");if(heart){const id=heart.dataset.heartPlaylist;const r=await postJSON("/api/playlist-heart",{id});const j=await r.json().catch(()=>({}));if(r.ok)heart.textContent=`♥ ${j.hearts} hearts`;else alert(j.error||"Could not heart playlist");return;}
   const copy=e.target.closest('[data-copy-playlist]');if(copy){
     if(currentAccount?.role!=='user'){popup('Sign in required','Sign in with a user account to save playlists.');return;}
     const p=[...playlists,...peerPlaylists,...userPublicPlaylists].find(x=>x.id===copy.dataset.copyPlaylist);
