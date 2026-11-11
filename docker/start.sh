@@ -12,6 +12,13 @@ if [ -z "${SCANNER_SECRET:-}" ]; then
   SCANNER_SECRET=$(cat "$SECRET_FILE")
 fi
 export SCANNER_SECRET
+# Supply optional Spotify credentials to Wrangler's local Worker bindings without
+# putting secrets in process arguments, the Docker image, or Git.
+if [ -n "${SPOTIFY_CLIENT_ID:-}" ] && [ -n "${SPOTIFY_CLIENT_SECRET:-}" ]; then
+  node -e 'const fs=require("node:fs");const keys=["SPOTIFY_CLIENT_ID","SPOTIFY_CLIENT_SECRET"];fs.writeFileSync("/app/.dev.vars",keys.map(k=>k+"="+JSON.stringify(process.env[k])).join("\n")+"\n",{mode:0o600});'
+else
+  rm -f /app/.dev.vars
+fi
 node /app/docker/gateway.mjs &
 GATEWAY_PID=$!
 npx wrangler dev -c wrangler.local.jsonc --ip 127.0.0.1 --port 8787 --persist-to /app/.wrangler/state --local --var "SCANNER_SECRET:$SCANNER_SECRET" &

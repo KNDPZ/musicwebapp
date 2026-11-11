@@ -111,20 +111,41 @@ paintBoot(3, "Songs, artists and playlists");
 
 const art = (src, label, cls = "") =>
   `<span class="art ${cls}" data-i="${esc((label || "?").trim().charAt(0).toUpperCase())}">${src ? `<img loading="lazy" alt="" src="${esc(src)}">` : ""}</span>`;
-document.addEventListener("error", (e) => {
-  const img=e.target;if(img.tagName!=="IMG")return;
-  if(!img.dataset.fallback && img.src.includes("/art/album?")){
-    const src=new URL(img.src);const artist=src.searchParams.get("artist"),album=src.searchParams.get("album");
-    const candidate=tracks.find(t=>primaryArtist(t)===artist&&albumName(t)===album);
-    if(candidate){img.dataset.fallback="1";img.src=candidate.origin ? peerResourceUrl(candidate.origin,"/art/track?id="+enc(candidate.remote_id||candidate.id)) : "/art/track?id="+enc(candidate.id);return;}
-  }
-  if(!img.dataset.fallback && img.src.includes("/art/artist?")){
-    const src=new URL(img.src);const artist=src.searchParams.get("name");
-    const candidate=tracks.find(t=>artistsOf(t).includes(artist));
-    if(candidate){img.dataset.fallback="1";img.src=candidate.origin ? peerResourceUrl(candidate.origin,"/art/track?id="+enc(candidate.remote_id||candidate.id)) : "/art/track?id="+enc(candidate.id);return;}
-  }
-  img.remove();
-}, true);
+// Try real album/track artwork before leaving an artist with only an initial.
+// Embedded audio covers are served by the Docker gateway's /art/track route.
+const artworkFallbacks=new WeakMap();
+function trackArtCandidates(t){
+ const id=t.remote_id||t.id;
+ const base=t.origin ? resource=>peerResourceUrl(t.origin,resource) : resource=>resource;
+ const out=[];
+ if(t.cover_url){
+  try {const resolved=new URL(t.cover_url,t.origin||location.origin);
+    if(t.origin && resolved.origin===new URL(t.origin).origin)out.push(peerResourceUrl(t.origin,resolved.pathname+resolved.search));
+    else if(resolved.protocol==="https:")out.push(resolved.href);
+  }catch{}
+ }
+ if(albumName(t))out.push(albumArt(t));
+ out.push(base("/art/track?id="+enc(id)));
+ return out;
+}
+document.addEventListener("error",e=>{
+ const img=e.target;if(img.tagName!=="IMG")return;
+ let candidates=artworkFallbacks.get(img);
+ if(!candidates){
+  const src=new URL(img.src,location.href);
+  if(src.pathname==="/art/artist"||src.pathname.endsWith("/art/artist")){
+   const name=src.searchParams.get("name");
+   candidates=tracks.filter(t=>artistsOf(t).includes(name)).flatMap(trackArtCandidates);
+  }else if(src.pathname==="/art/album"||src.pathname.endsWith("/art/album")){
+   const name=src.searchParams.get("artist"),album=src.searchParams.get("album");
+   candidates=tracks.filter(t=>primaryArtist(t)===name&&albumName(t)===album).flatMap(trackArtCandidates);
+  }else {img.remove();return;}
+  candidates=[...new Set(candidates)].filter(x=>x&&x!==img.src);
+  artworkFallbacks.set(img,candidates);
+ }
+ const next=candidates.shift();if(next){img.src=next;return;}
+ img.remove();
+},true);
 
 let loadError = "";
 const arr = (x) => (Array.isArray(x) ? x : []);
@@ -227,6 +248,7 @@ async function load() {
   const localIds = new Set(tracks.map((x) => x.id));
   const remote = await loadPeers(localIds);
   peerTrackLookup = new Map(remote.map(t=>[t.id,t]));
+  await loadPeerReactionCounts();
   try {
     const peers=arr(await (await fetch("/api/network/peers")).json());
     await Promise.all(peers.map(async peer=>{
@@ -945,6 +967,39 @@ async function requestPrevious(el, third) {
   el.innerHTML = `<div class="tabs" role="group" aria-label="Previous requests by kind" style="margin-bottom:16px">${pills}</div>${body}`;
 }
 
+// Spotify's official search requires optional server-side API credentials.
+let spotifySearchTimer=0,spotifySearchSeq=0,spotifySearchHits=[];
+async function searchSpotifyPlaylists() {
+  const input=$("#spotifyPlaylistSearch"), area=$("#spotifyPlaylistResults");
+  if(!input||!area)return;
+  const q=input.value.trim(),token=++spotifySearchSeq;
+  if(q.length<2){area.innerHTML="";return;}
+  area.innerHTML='<p class="muted">Searching Spotify…</p>';
+  try {
+    const r=await fetch("/api/spotify/search-playlists?q="+enc(q));
+    const j=await r.json();
+    if(token!==spotifySearchSeq||!$("#spotifyPlaylistResults"))return;
+    if(!r.ok){area.innerHTML=`<p class="muted spotify-error">${esc(j.error||"Spotify search is unavailable.")}</p>`;return;}
+    spotifySearchHits=Array.isArray(j)?j:[];
+    area.innerHTML=spotifySearchHits.length?spotifySearchHits.map((p,i)=>
+      `<button type="button" class="spotify-result" data-spotify-choice="${i}">${art(p.image,p.title)}<span class="t"><b>${esc(p.title)}</b><small>${esc(p.sub||"Spotify playlist")}</small></span></button>`).join("")
+      :'<p class="muted">No matching playlists. You can still paste a link.</p>';
+  } catch {if(token===spotifySearchSeq&&$("#spotifyPlaylistResults"))area.innerHTML='<p class="muted">Spotify search could not connect. Paste a link instead.</p>';}
+}
+$("#list").addEventListener("input",e=>{
+  if(e.target.id!=="spotifyPlaylistSearch")return;
+  clearTimeout(spotifySearchTimer);
+  spotifySearchTimer=setTimeout(searchSpotifyPlaylists,350);
+});
+$("#list").addEventListener("click",e=>{
+  const choice=e.target.closest("[data-spotify-choice]");
+  if(!choice)return;
+  const p=spotifySearchHits[Number(choice.dataset.spotifyChoice)];
+  if(!p||!/^https:\/\/open\.spotify\.com\/playlist\/[A-Za-z0-9]+$/.test(p.url))return;
+  $("#rq").value=p.url;onType();
+  $("#spotifyPlaylistResults").innerHTML=`<p class="muted">Selected: ${esc(p.title)}</p>`;
+});
+
 function requestForm(el) {
   noView();
   const pl = reqKind === "playlist";
@@ -952,6 +1007,10 @@ function requestForm(el) {
     <p class="muted" style="margin-top:0">Ask for a song, artist, album or a Spotify playlist. Requests wait in the queue until they are added.</p>
     <div class="tabs" role="group" aria-label="What are you requesting?">${Object.entries(KIND).map(([k, v]) =>
       `<button type="button" class="tab" data-kind="${k}" aria-pressed="${k === reqKind}">${v}</button>`).join("")}</div>
+    ${pl ? `<div class="spotify-search-block"><label class="muted" for="spotifyPlaylistSearch">Search Spotify playlists</label>
+      <input id="spotifyPlaylistSearch" type="search" autocomplete="off" placeholder="Search by playlist name or artist" maxlength="80" aria-describedby="spotifySearchHelp">
+      <p id="spotifySearchHelp" class="muted">Choose a result to fill the playlist link below.</p>
+      <div id="spotifyPlaylistResults" class="spotify-results" role="status" aria-live="polite"></div></div>` : ""}
     <div class="combo">
       <label for="rq" class="muted">${pl ? "Spotify playlist link" : `Search for a ${KIND[reqKind].toLowerCase()}`}</label>
       <input id="rq" type="text" ${pl ? "" : 'role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="rqList"'} placeholder="${pl ? "https://open.spotify.com/playlist/…" : "Start typing a name"}" maxlength="200" style="width:100%;margin-top:6px">
@@ -1140,29 +1199,54 @@ function renderQueue() {
     : empty(queue.length ? "That's the last song." : "Play a song to see what's next.");
 }
 
+// Local reaction counts for peer music, never posted to the remote host.
+const peerReactionCounts=new Map();
+const peerReactionKey=t=>`${registeredPeerOrigin(t.origin)}|${t.remote_id||String(t.id).split("|").at(-1)}`;
+async function loadPeerReactionCounts(){
+ try{const r=await fetch("/api/peer-reactions",{headers:{"X-Visitor":vid}});if(!r.ok)return;
+ for(const x of await r.json()){const key=`${x.origin}|${x.remote_id}`;
+  peerReactionCounts.set(key,x);
+  if(x.my_heart||x.my_like||x.my_dislike) mine[key]={heart:!!x.my_heart,like:!!x.my_like,dislike:!!x.my_dislike};
+ }
+ store.set("mine",mine);
+ }catch{}
+}
 // ---------- reactions ----------
 function paintReact() {
-  const t = cur(), remote = !!(t && t.origin), m = (t && !remote && mine[t.id]) || {};
-  [["bh", "ch", "heart"], ["bl", "cl", "like"], ["bd", "cd", "dislike"]].forEach(([b, c, k]) => {
-    $("#" + b).disabled = !t || remote;
-    $("#" + b).classList.toggle("on", !!m[k]);
-    $("#" + b).setAttribute("aria-pressed", !!m[k]);
-    $("#" + c).textContent = t ? t[KEY[k]] : 0;
-    setTip("#" + b, remote ? "Reactions stay on the peer’s server" : { heart: ["Heart this song", "Remove heart"], like: ["Like", "Remove like"], dislike: ["Dislike", "Remove dislike"] }[k][m[k] ? 1 : 0]);
+  const t=cur(),remote=!!t?.origin;
+  const key=t ? (remote?peerReactionKey(t):t.id):"";
+  const m=(t&&mine[key])||{};
+  const counts=remote?(peerReactionCounts.get(key)||{hearts:0,likes:0,dislikes:0}):t;
+  [["bh","ch","heart"],["bl","cl","like"],["bd","cd","dislike"]].forEach(([b,c,k])=>{
+    $("#"+b).disabled=!t;
+    $("#"+b).classList.toggle("on",!!m[k]);
+    $("#"+b).setAttribute("aria-pressed",!!m[k]);
+    $("#"+c).textContent=t ? Number(counts?.[KEY[k]]||0) : 0;
+    setTip("#"+b,{heart:["Heart this song","Remove heart"],like:["Like","Remove like"],dislike:["Dislike","Remove dislike"]}[k][m[k]?1:0]+(remote?" (saved on this server)":""));
   });
 }
 async function react(kind) {
-  const t = cur(); if (!t || t.origin) return; // remote tracks are reacted on their own server
-  const m = (mine[t.id] ??= {}), on = !m[kind];
-  const bump = (k, d) => (t[KEY[k]] = Math.max(0, t[KEY[k]] + d));
-  m[kind] = on; bump(kind, on ? 1 : -1);
-  const other = kind === "like" ? "dislike" : kind === "dislike" ? "like" : null;
-  if (on && other && m[other]) { m[other] = false; bump(other, -1); }
-  store.set("mine", mine); paintReact();
+  const t=cur();if(!t)return;
+  const remote=!!t.origin,key=remote?peerReactionKey(t):t.id;
+  const m=(mine[key]??={}),prior={...m};
+  const counts=remote?(peerReactionCounts.get(key)||{hearts:0,likes:0,dislikes:0}):t;
+  const priorCounts={...counts};
+  const on=!m[kind];
+  const bump=(k,d)=>counts[KEY[k]]=Math.max(0,Number(counts[KEY[k]]||0)+d);
+  m[kind]=on;bump(kind,on?1:-1);
+  const other=kind==="like"?"dislike":kind==="dislike"?"like":null;
+  if(on&&other&&m[other]){m[other]=false;bump(other,-1);}
+  if(remote)peerReactionCounts.set(key,counts);
+  store.set("mine",mine);paintReact();
   try {
-    const r = await fetch("/api/react/" + t.id, { method: "POST", headers: { "content-type": "application/json", "X-Visitor": vid }, body: JSON.stringify({ kind, on }) });
-    if (r.ok) { Object.assign(t, await r.json()); paintReact(); }
-  } catch {}
+    const endpoint=remote?"/api/peer-react":"/api/react/"+t.id;
+    const body=remote?{kind,on,origin:registeredPeerOrigin(t.origin),remote_id:t.remote_id||String(t.id).split("|").at(-1)}:{kind,on};
+    const r=await fetch(endpoint,{method:"POST",headers:{"content-type":"application/json","X-Visitor":vid},body:JSON.stringify(body)});
+    if(!r.ok)throw Error("Reaction wasn't saved");
+    const saved=await r.json();
+    if(remote){peerReactionCounts.set(key,saved);}else Object.assign(t,saved);
+  }catch{mine[key]=prior;if(remote)peerReactionCounts.set(key,priorCounts);else Object.assign(t,priorCounts);store.set("mine",mine);popup("Couldn't save reaction","Please try again.");}
+  paintReact();
 }
 $("#bh").addEventListener("click", () => react("heart"));
 $("#bl").addEventListener("click", () => react("like"));
@@ -1353,7 +1437,7 @@ $("#loginForm").addEventListener("submit", async (e) => {
 let currentAccount=null;
 async function refreshAccount(){
   try {const r=await fetch("/api/me");currentAccount=await r.json();}catch{currentAccount=null;}
-  $("#whoami").textContent=currentAccount?.authenticated?currentAccount.username:"";
+  $("#whoami").textContent=currentAccount?.authenticated?currentAccount.username:"Sign In";
   $("#accountMenu").classList.toggle("signed-in",!!currentAccount?.authenticated);
   if(!currentAccount?.authenticated)$("#accountDrop").classList.add("hidden");
   // Keep + visible to guests; it opens a themed sign-in requirement dialog.

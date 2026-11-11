@@ -1,4 +1,9 @@
-# WASP
+<div align="center">
+  <img src="public/wasp-mascot.png" width="170" alt="WASP yellow-and-black wasp mascot on transparent background">
+  <h1>WASP</h1>
+  <p><strong>Peer-to-peer music, hosted your way.</strong></p>
+</div>
+
 
 WASP is a **peer-to-peer music webapp** that lets people host their own music libraries and connect them to other WASP-compatible servers. You can listen to music on your own server or discover music shared by connected hosts. Each host controls their own library and whether to share it over the network.
 
@@ -10,6 +15,10 @@ You can deploy WASP locally for development, on **Cloudflare Workers**, or on yo
 > Initial admin ID: `admin`  
 > Initial admin password: `21232f297a57a5a743894a0e4a801fc3`  
 > Once signed in, open **Admin → Account settings** to change it.
+
+## Spotify playlist search (optional)
+
+To enable **Request → Playlist → Search**, configure `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET` on the server: set them as **Portainer stack environment variables** for Docker, use **Cloudflare Worker secrets** for production Workers, or use a local **`.dev.vars`** file beside `wrangler.jsonc` during `npm run dev`. Create an application in the Spotify Developer Dashboard. Do not commit these credentials to Git or put them into frontend JavaScript. Spotify's Web API access policies, development-mode restrictions, and rate limits apply. If credentials are absent or Spotify denies access, users can still paste public Spotify playlist links into the existing request form. The app searches playlist metadata only; it does not download Spotify audio.
 
 ## Local development
 

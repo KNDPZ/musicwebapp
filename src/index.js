@@ -76,6 +76,7 @@ function init(env) {
       "CREATE TABLE IF NOT EXISTS playlists (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, created_at INTEGER NOT NULL)",
       "CREATE TABLE IF NOT EXISTS playlist_tracks (playlist_id TEXT NOT NULL, track_id TEXT NOT NULL, added_at INTEGER NOT NULL, PRIMARY KEY (playlist_id, track_id))",
       "CREATE TABLE IF NOT EXISTS reactions (track_id TEXT NOT NULL, voter TEXT NOT NULL, kind TEXT NOT NULL, PRIMARY KEY (track_id, voter, kind))",
+      "CREATE TABLE IF NOT EXISTS peer_reaction_tracks (id TEXT PRIMARY KEY, origin TEXT NOT NULL, remote_id TEXT NOT NULL, created_at INTEGER NOT NULL, UNIQUE(origin,remote_id))",
       "CREATE TABLE IF NOT EXISTS user_song_reactions (user_id TEXT NOT NULL, track_id TEXT NOT NULL, kind TEXT NOT NULL, PRIMARY KEY(user_id, track_id, kind))",
       "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
       "CREATE TABLE IF NOT EXISTS entity_reactions (kind TEXT NOT NULL, entity TEXT NOT NULL, voter TEXT NOT NULL, reaction TEXT NOT NULL, PRIMARY KEY (kind, entity, voter, reaction))",
@@ -393,6 +394,29 @@ async function spotifyPlaylist(raw) {
   const title = clean(ov.title, 120) || (ev && ev.name) || "Spotify playlist";
   const image = safeImage(ov.thumbnail_url) || (ev && ev.image) || null;
   return { kind: "playlist", title, artist: "", album: "", image, url: link, dedupe: `playlist|${m[1]}`, meta: ev && ev.tracks.length ? playlistMeta(ev.tracks) : null };
+}
+// Optional Spotify Web API playlist search. Credentials are server-side secrets.
+let spotifyAuthCache={id:"",token:"",expires:0};
+async function spotifySearchPlaylists(env, q) {
+  const id=String(env.SPOTIFY_CLIENT_ID||"").trim(), secret=String(env.SPOTIFY_CLIENT_SECRET||"").trim();
+  if (!id || !secret) return json({error:"Spotify playlist search needs SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in the server environment. You can still paste a playlist link."},503);
+  if (spotifyAuthCache.id!==id || spotifyAuthCache.expires<Date.now()) {
+    const token=await fetch("https://accounts.spotify.com/api/token",{method:"POST",
+      headers:{authorization:"Basic "+btoa(id+":"+secret),"content-type":"application/x-www-form-urlencoded"},
+      body:"grant_type=client_credentials",signal:AbortSignal.timeout(10000)});
+    if(!token.ok)return json({error:"Spotify rejected the configured credentials. Please check the Spotify app and permissions."},502);
+    const payload=await token.json();
+    if(!payload.access_token)return json({error:"Spotify did not provide a valid access token."},502);
+    spotifyAuthCache={id,token:payload.access_token,expires:Date.now()+(Math.max(60,Number(payload.expires_in)||3600)-30)*1000};
+  }
+  const target="https://api.spotify.com/v1/search?"+new URLSearchParams({q,type:"playlist",limit:"10"});
+  const r=await fetch(target,{headers:{authorization:"Bearer "+spotifyAuthCache.token,accept:"application/json"},signal:AbortSignal.timeout(10000)});
+  if(!r.ok)return json({error:r.status===429?"Spotify search rate limit reached. Try again later.":"Spotify search is unavailable for these credentials (HTTP "+r.status+"). You can still paste a playlist link."},502);
+  const results=await r.json();
+  const playlists=(results.playlists?.items||[]).filter(x=>x&&/^[A-Za-z0-9]{10,40}$/.test(x.id||""));
+  return json(playlists.map(x=>({id:x.id,title:clean(x.name,120),
+    sub:[x.owner?.display_name||x.owner?.id, Number.isFinite(x.items?.total)?x.items.total+" songs":null].filter(Boolean).join(" · "),
+    image: safeImage(x.images?.[0]?.url),url:"https://open.spotify.com/playlist/"+x.id})));
 }
 // which Spotify songs are already in the library? lib = rows of tracks
 function matchPlaylist(lib, tracks) {
@@ -894,6 +918,12 @@ async function api(req, env, url, ctx) {
     let members; try { members = await enrichMembers(env, name, row); } catch { try { members = JSON.parse(row.members); } catch { members = []; } }
     return json({ members }, 200, { "cache-control": "no-cache" });
   }
+  if (path === "/api/spotify/search-playlists" && m === "GET") {
+    const q=clean(url.searchParams.get("q"),80);
+    if(q.length<2)return json([]);
+    try { return await spotifySearchPlaylists(env,q); }
+    catch { return json({error:"Unable to reach Spotify right now. Paste a playlist link instead."},502); }
+  }
   if (path === "/api/suggest" && m === "GET") return suggest(url);
   if (path === "/api/bio" && m === "GET") return serveBio(env, url, ctx);
   if (path === "/api/similar" && m === "GET") return serveSimilar(env, url);
@@ -956,6 +986,57 @@ async function api(req, env, url, ctx) {
     } catch { return json({ error: "That's already in the queue.", code: "in_queue" }, 409); }
     const { n } = await DB.prepare("SELECT COUNT(*) AS n FROM requests WHERE status = 'active'").first();
     return json({ ok: true, position: n }, 201);
+  }
+  // Peer-song reactions are kept in THIS server's D1. A peer's original
+  // music, reactions and library are never modified by local listeners.
+  if (path === "/api/peer-reactions" && m === "GET") {
+    const visitor = req.headers.get("X-Visitor") || "";
+    const voter = /^[\w-]{8,64}$/.test(visitor) ? await sha256(visitor) : "";
+    const { results } = await DB.prepare(`SELECT p.id, p.origin, p.remote_id,
+      COALESCE(SUM(r.kind = 'heart'),0) AS hearts,
+      COALESCE(SUM(r.kind = 'like'),0) AS likes,
+      COALESCE(SUM(r.kind = 'dislike'),0) AS dislikes,
+      COALESCE(MAX(r.voter = ? AND r.kind = 'heart'),0) AS my_heart,
+      COALESCE(MAX(r.voter = ? AND r.kind = 'like'),0) AS my_like,
+      COALESCE(MAX(r.voter = ? AND r.kind = 'dislike'),0) AS my_dislike
+      FROM peer_reaction_tracks p LEFT JOIN reactions r ON r.track_id = p.id
+      GROUP BY p.id`).bind(voter,voter,voter).all();
+    return json(results);
+  }
+  if (path === "/api/peer-react" && m === "POST") {
+    const b = await req.json().catch(() => ({}));
+    const origin = clean(b.origin, 250).replace(/\/$/, "");
+    const remoteId = clean(b.remote_id, 100);
+    const vid = req.headers.get("X-Visitor") || "";
+    if (!/^[\w-]{8,64}$/.test(vid) || !["heart","like","dislike"].includes(b.kind) ||
+        !/^[\w-]{1,100}$/.test(remoteId) || !origin) return json({error:"Invalid reaction."},400);
+    const peer = await DB.prepare("SELECT url FROM peers WHERE url = ?").bind(origin).first();
+    if (!peer) return json({error:"Unknown peer."},404);
+    const id = "peer-" + await sha256(origin + "\n" + remoteId);
+    const voter = await sha256(vid);
+    const kind = b.kind;
+    const statements = [DB.prepare("INSERT OR IGNORE INTO peer_reaction_tracks(id,origin,remote_id,created_at) VALUES (?,?,?,?)")
+      .bind(id,origin,remoteId,Date.now())];
+    if (b.on === true) {
+      statements.push(DB.prepare("INSERT OR IGNORE INTO reactions(track_id,voter,kind) VALUES (?,?,?)").bind(id,voter,kind));
+      const other = kind === "like" ? "dislike" : kind === "dislike" ? "like" : null;
+      if (other) statements.push(DB.prepare("DELETE FROM reactions WHERE track_id = ? AND voter = ? AND kind = ?").bind(id,voter,other));
+    } else {
+      statements.push(DB.prepare("DELETE FROM reactions WHERE track_id = ? AND voter = ? AND kind = ?").bind(id,voter,kind));
+    }
+    const signedIn = await sessionInfo(req,env);
+    if (signedIn?.role === "user" && signedIn.user_id) {
+      if (b.on === true) {
+        statements.push(DB.prepare("INSERT OR IGNORE INTO user_song_reactions(user_id,track_id,kind) VALUES (?,?,?)").bind(signedIn.user_id,id,kind));
+        const other=kind === "like" ? "dislike" : kind === "dislike" ? "like" : null;
+        if (other) statements.push(DB.prepare("DELETE FROM user_song_reactions WHERE user_id = ? AND track_id = ? AND kind = ?").bind(signedIn.user_id,id,other));
+      } else statements.push(DB.prepare("DELETE FROM user_song_reactions WHERE user_id = ? AND track_id = ? AND kind = ?").bind(signedIn.user_id,id,kind));
+    }
+    await DB.batch(statements);
+    const counts = await DB.prepare(`SELECT COALESCE(SUM(kind = 'heart'),0) AS hearts,
+      COALESCE(SUM(kind = 'like'),0) AS likes, COALESCE(SUM(kind = 'dislike'),0) AS dislikes
+      FROM reactions WHERE track_id = ?`).bind(id).first();
+    return json({ ...counts, origin, remote_id:remoteId });
   }
   if ((x = path.match(/^\/api\/play\/([\w-]+)$/)) && m === "POST") {
     await DB.prepare("UPDATE tracks SET plays = plays + 1 WHERE id = ?").bind(x[1]).run();

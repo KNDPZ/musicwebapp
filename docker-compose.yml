@@ -18,6 +18,9 @@ services:
       SCANNER_SECRET: ${SCANNER_SECRET:-}
       MUSIC_SCAN_PATHS: /music
       MUSIC_SCAN_INTERVAL: ${MUSIC_SCAN_INTERVAL:-300}
+      # Optional Spotify API credentials used only by the server-side playlist search.
+      SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID:-}
+      SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET:-}
       # Optional canonical-origin -> configured Tailscale bridge URL mapping.
       PEER_RELAY_ALIASES: ${PEER_RELAY_ALIASES:-}
     volumes:
