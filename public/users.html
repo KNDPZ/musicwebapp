@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>RiffVault · My playlists</title>
-<link rel="icon" id="favicon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Ctext y=%27.9em%27 font-size=%2790%27%3E🎵%3C/text%3E%3C/svg%3E">
+<title>WASP · My playlists</title>
+<link rel="icon" id="favicon" href="/wasp-icon.png">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -35,7 +35,7 @@
 
 <div class="app">
   <aside class="side">
-    <a class="brand" id="brand" href="#home" aria-label="Home">Music</a>
+    <a class="brand" id="brand" href="#home" aria-label="Home">WASP</a>
     <nav id="nav" aria-label="Browse"></nav>
   </aside>
   <div class="main">
@@ -47,7 +47,7 @@
           <button class="ib ico" id="gear" aria-label="Log in" title="Account"><span id="whoami" class="whoami"></span><svg><use href="#i-user"/></svg></button>
           <div class="account-drop hidden" id="accountDrop">
             <a href="#user/private">My playlists</a><a href="#user/public">Public playlists</a>
-            <a href="#settings">Account settings</a><button type="button" id="userLogout">Log out</button>
+            <a id="accountSettingsLink" href="#settings">Account settings</a><a id="adminGeneral" href="/admin.html#settings" hidden>General settings</a><button type="button" id="userLogout">Log out</button>
           </div>
         </div>
       </div>
@@ -89,7 +89,7 @@
       <button class="ib tip" id="prev" data-tip="Previous" aria-label="Previous"><svg class="fill" viewBox="0 0 24 24"><path d="M6 5h2v14H6zM20 5v14L9 12z"/></svg></button>
       <button class="ib play tip" id="pp" data-tip="Play" aria-label="Play"><svg class="fill" viewBox="0 0 24 24" id="ppi"><path d="M7 4v16l13-8z"/></svg></button>
       <button class="ib tip" id="next" data-tip="Next" aria-label="Next"><svg class="fill" viewBox="0 0 24 24"><path d="M16 5h2v14h-2zM4 5v14l11-7z"/></svg></button>
-      <button class="ib tip" id="rep" data-tip="Repeat: off" aria-label="Repeat: off"><svg><use href="#i-repeat"/></svg><span class="badge" id="repT"></span></button><button class="ib tip" id="playlistAdd" title="Add playing song to playlist" aria-label="Add playing song to playlist" hidden>＋</button>
+      <button class="ib tip" id="rep" data-tip="Repeat: off" aria-label="Repeat: off"><svg><use href="#i-repeat"/></svg><span class="badge" id="repT"></span></button><button class="ib tip" id="playlistAdd" title="Add playing song to playlist" aria-label="Add playing song to playlist">＋</button>
     </div>
     <div class="seek"><span class="muted" id="cur">0:00</span><input id="seek" type="range" min="0" max="100" value="0" step="0.1" aria-label="Seek"><span class="muted" id="dur">0:00</span></div>
   </div>
@@ -124,12 +124,19 @@
   <form id="registerForm" class="form" style="flex-direction:column;align-items:stretch">
     <h2 id="regT" style="margin:0 0 4px">Create account</h2>
     <p class="muted" style="margin:0">Account recovery is not available yet. Keep your password somewhere safe.</p>
-    <label for="regUser" class="muted">Username</label><input id="regUser" minlength="3" maxlength="32" autocomplete="username" required>
+    <label for="regUser" class="muted">Username</label><input id="regUser" type="text" minlength="3" maxlength="32" autocomplete="username" required>
     <label for="regPw" class="muted">Password (8+ characters)</label><input id="regPw" type="password" minlength="8" autocomplete="new-password" required>
     <label for="regPw2" class="muted">Confirm password</label><input id="regPw2" type="password" minlength="8" autocomplete="new-password" required>
     <p class="msg err" id="regErr" role="alert"></p>
     <div class="form" style="justify-content:flex-end"><button class="btn ghost" type="button" id="regCancel">Cancel</button><button class="btn" type="submit">Create account</button></div>
   </form>
+</dialog>
+<dialog id="signinRequiredDlg" aria-labelledby="signinRequiredTitle" class="signin-required-dialog">
+  <div class="signin-required-content">
+    <h2 id="signinRequiredTitle">Sign in required</h2>
+    <p class="muted">You must be logged in to add a song or an album to your playlist.</p>
+    <div class="form" style="justify-content:flex-end"><button class="btn ghost" id="signinRequiredCancel" type="button">Cancel</button><button class="btn ghost" id="signinRequiredRegister" type="button">Register</button><button class="btn" id="signinRequiredLogin" type="button">Log in</button></div>
+  </div>
 </dialog>
 <dialog id="playlistDialog" class="playlist-dialog" aria-label="Add to playlist"><div class="playlist-dialog-content"><h2>Add to playlist</h2><label for="playlistOptions">Existing playlist</label><select id="playlistOptions"></select><div class="playlist-dialog-divider">Or create a new playlist</div><label for="newPlaylistName">New playlist name</label><input id="newPlaylistName" maxlength="80" placeholder="New playlist"><label class="playlist-check"><input type="checkbox" id="newPlaylistPublic"> Public playlist</label><p class="msg err" id="playlistMessage" role="status"></p><div class="playlist-dialog-actions"><button class="btn ghost" id="playlistCancel" type="button">Cancel</button><button class="btn" id="playlistSave" type="button">Add</button></div></div></dialog>
 <script>if (!location.hash) location.replace("/users.html#user/private");</script>

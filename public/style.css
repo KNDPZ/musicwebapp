@@ -300,6 +300,21 @@ body.up-open #lyrics.full{right:340px}
 .home-ad{margin-bottom:8px}
 .ib.ico svg{fill:currentColor;stroke:currentColor;stroke-width:1.6}
 
+/* WASP v13 polish */
+.brand-icon{width:27px;height:27px;object-fit:contain;border-radius:5px;flex:none}
+.side .brand{display:flex!important;align-items:center;gap:8px}
+.brand-icon-toggle{display:flex;align-items:center;gap:10px;padding:10px 0;color:var(--text);cursor:pointer}
+.brand-icon-toggle input{accent-color:var(--accent);width:17px;height:17px}
+.signin-required-dialog{max-width:min(400px,calc(100vw - 36px));width:100%;color:var(--text);background:var(--panel);border:1px solid var(--line2);border-radius:18px;padding:24px;box-shadow:0 20px 80px #000b}
+.signin-required-dialog h2{font-size:22px;margin:0 0 10px}
+.signin-required-dialog p{line-height:1.6;margin:0 0 22px}
+.signin-required-dialog .form{gap:8px}
+.signin-required-dialog::backdrop{background:#000a}
+.reqform #rqGo{margin-top:22px}
+.users-summary{overflow-x:auto}
+.users-summary table{min-width:660px}
+.users-summary th{text-align:left;white-space:nowrap;color:var(--muted)}
+.users-summary td{padding:13px 10px}
 /* RiffVault navigation and playlist controls */
 .home-row-head{display:flex;align-items:center;justify-content:space-between;gap:1rem}.home-row-head h2{margin:0}.hnav{border:1px solid #7775;border-radius:50%;background:transparent;color:inherit;font-size:1.6rem;cursor:pointer;width:36px;height:36px}.hrow{overflow-x:auto;scrollbar-width:none;scroll-behavior:smooth}.hrow::-webkit-scrollbar{display:none}.album-add{margin-left:auto;border:1px solid #7776;border-radius:50%;background:transparent;color:inherit;cursor:pointer;font-size:1.3rem}.user-tabs{margin-bottom:1rem}#playlistDialog{max-width:95vw;color:inherit;background:#202126;border:1px solid #7777;border-radius:12px;padding:1.5rem}#playlistDialog select{padding:.7rem;background:#303139;color:white;border-radius:6px}
 

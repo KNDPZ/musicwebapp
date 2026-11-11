@@ -63,12 +63,21 @@ let vid = store.get("vid", null);
 if (!vid) { vid = makeId(); store.set("vid", vid); }
 
 // ---------- site name, tab title, browser icon, front-page ad (set by the admin) ----------
-let site = { ...store.get("site", { name: "Music", title: "", favicon: 0 }), ad: { enabled: false, html: "", height: 340 } };
+let site = { ...store.get("site", { name: "WASP", title: "", favicon: 0, show_brand_icon: false }), ad: { enabled: false, html: "", height: 340 } };
 const setTip = (sel, text) => { const b = $(sel); b.dataset.tip = text; b.setAttribute("aria-label", text); };
 function applySite() {
-  $("#brand").textContent = site.name;
-  document.title = site.title || site.name;
-  if (site.favicon) $("#favicon").href = `/site/favicon?v=${site.favicon}`;
+  const brand = $("#brand");
+  brand.textContent = "";
+  if (site.show_brand_icon) {
+    const img = document.createElement("img");
+    img.className = "brand-icon";
+    img.alt = "";
+    img.src = site.favicon ? `/site/favicon?v=${site.favicon}` : "/wasp-icon.png";
+    brand.append(img);
+  }
+  brand.append(document.createTextNode(site.name || "WASP"));
+  document.title = site.title || site.name || "WASP";
+  $("#favicon").href = site.favicon ? `/site/favicon?v=${site.favicon}` : "/wasp-icon.png";
 }
 function adSlot() {
   const ad = site.ad;
@@ -213,7 +222,7 @@ async function load() {
   try {const r=await fetch("/api/user-playlists");if(r.ok)userPublicPlaylists=arr(await r.json());}catch{}
   peerPlaylists=[];
   loadError = t.fail || p.fail || (t.data && !Array.isArray(t.data) ? "/api/tracks returned something unexpected" : "");
-  if (s.data && typeof s.data.name === "string") { site = { ...s.data, ad: s.data.ad || { enabled: false, html: "", height: 340 } }; store.set("site", { name: site.name, title: site.title, favicon: site.favicon }); applySite(); }
+  if (s.data && typeof s.data.name === "string") { site = { ...s.data, ad: s.data.ad || { enabled: false, html: "", height: 340 } }; store.set("site", { name: site.name, title: site.title, favicon: site.favicon, show_brand_icon: site.show_brand_icon }); applySite(); }
   paintBoot(90, "Network peers");
   const localIds = new Set(tracks.map((x) => x.id));
   const remote = await loadPeers(localIds);
@@ -545,7 +554,7 @@ function artistPage(el, name) {
   const body = names.map((g) => {
     const l = groups[g].sort(byTrack);
     l.forEach((t) => ids.push(t.id));
-    return `<section><h2 class="sec">${art(albumArt(l[0]), g || "S")}${esc(g || "Singles")} <span class="muted" style="font-size:14px;font-weight:400">${plural(l.length, "song")}</span><button class="album-add" data-album-ids="${esc(l.map(t=>t.id).join(","))}" title="Add entire album to playlist" hidden>＋</button></h2>${l.map((t, i) => row(t, g ? numLabel(t, i, l) : i + 1)).join("")}</section>`;
+    return `<section><h2 class="sec">${art(albumArt(l[0]), g || "S")}${esc(g || "Singles")} <span class="muted" style="font-size:14px;font-weight:400">${plural(l.length, "song")}</span><button class="album-add" data-album-ids="${esc(l.map(t=>t.id).join(","))}" title="Add entire album to playlist">＋</button></h2>${l.map((t, i) => row(t, g ? numLabel(t, i, l) : i + 1)).join("")}</section>`;
   }).join("");
   view = { ids, label: name, pl: null };
   const albums = names.filter((g) => g).length;
@@ -590,9 +599,26 @@ const memberTile = (p) => {
   const inner = `${art(p.image || "", p.name, "round")}<b>${esc(p.name)}</b>${p.role ? `<span class="muted">${esc(p.role)}</span>` : ""}`;
   return p.url ? `<a class="simtile" href="${esc(p.url)}" target="_blank" rel="noopener" title="Open on Wikipedia">${inner}</a>` : `<div class="simtile">${inner}</div>`;
 };
+function artistInfoEndpoints(name, endpoint) {
+  const local = `${endpoint}?name=${enc(name)}`;
+  const origins = [...new Set(tracks.filter(t => t.origin && artistsOf(t).includes(name)).map(t => t.origin))];
+  const remote = origins.map(origin => peerResourceUrl(origin, local));
+  const hasLocal = tracks.some(t => !t.origin && artistsOf(t).includes(name));
+  return hasLocal ? [local, ...remote] : [...remote, local];
+}
+async function fetchArtistInfo(name, endpoint) {
+  for (const url of artistInfoEndpoints(name, endpoint)) {
+    try {
+      const r = await fetch(url, { signal: AbortSignal.timeout(9000) });
+      if (r.ok) return await r.json();
+    } catch { /* try another connected source */ }
+  }
+  return null;
+}
 async function loadLineup(name) {
   let members = null;
-  try { const r = await fetch("/api/lineup?name=" + enc(name)); if (r.ok) members = arr((await r.json()).members); } catch {}
+  const details = await fetchArtistInfo(name, "/api/lineup");
+  if (details) members = arr(details.members);
   if (!members || !artistView || artistView.name !== name || !artistView.bio) return;
   artistView.bio.members = members;
   paintArtist();
@@ -605,7 +631,7 @@ function simTile(s, big) {
 }
 async function loadBio(name) {
   let b = null;
-  try { const r = await fetch("/api/bio?name=" + enc(name)); if (r.ok) b = await r.json(); } catch {}
+  b = await fetchArtistInfo(name, "/api/bio");
   const cur = parse();
   if (!artistView || artistView.name !== name || cur.a !== "artist" || dec(cur.arg) !== name) return; // the page changed while we waited
   artistView.bio = b;
@@ -614,7 +640,8 @@ async function loadBio(name) {
 }
 async function loadSimilar(name) {
   let list = [];
-  try { const r = await fetch("/api/similar?name=" + enc(name)); if (r.ok) list = arr((await r.json()).artists); } catch {}
+  const data = await fetchArtistInfo(name, "/api/similar");
+  if (data) list = arr(data.artists);
   if (!artistView || artistView.name !== name) return;
   artistView.similar = list;
   paintArtist();
@@ -1329,12 +1356,27 @@ async function refreshAccount(){
   $("#whoami").textContent=currentAccount?.authenticated?currentAccount.username:"";
   $("#accountMenu").classList.toggle("signed-in",!!currentAccount?.authenticated);
   if(!currentAccount?.authenticated)$("#accountDrop").classList.add("hidden");
-  $("#playlistAdd").hidden=!currentAccount?.authenticated || currentAccount.role!=="user";
-  document.querySelectorAll(".album-add").forEach(b=>b.hidden=currentAccount?.role!=="user");
+  // Keep + visible to guests; it opens a themed sign-in requirement dialog.
+  $("#playlistAdd").hidden = false;
+  document.querySelectorAll(".album-add").forEach(b=>b.hidden=false);
 }
 const postJSON=(url,body)=>fetch(url,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
+function requireUserForPlaylist() {
+  if (currentAccount?.role === "user") return false;
+  $("#signinRequiredDlg").showModal();
+  return true;
+}
+$("#signinRequiredCancel").onclick = () => $("#signinRequiredDlg").close();
+$("#signinRequiredLogin").onclick = () => {
+  $("#signinRequiredDlg").close();
+  $("#dlg").showModal();
+};
+$("#signinRequiredRegister").onclick = () => {
+  $("#signinRequiredDlg").close();
+  $("#registerDlg").showModal();
+};
 async function openPlaylistAdd(ids){
-  if(currentAccount?.role!=="user")return;
+  if(requireUserForPlaylist()) return;
   const d=$("#playlistDialog"), list=$("#playlistOptions");
   d.dataset.ids=ids.join(",");
   const r=await fetch("/api/user/playlists");

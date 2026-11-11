@@ -1,8 +1,8 @@
-# RiffVault
+# WASP
 
-RiffVault is a **peer-to-peer music webapp** that lets people host their own music libraries and connect them to other RiffVault servers. You can listen to music on your own server or discover music shared by connected hosts. Each host controls their own library and whether to share it over the network.
+WASP is a **peer-to-peer music webapp** that lets people host their own music libraries and connect them to other WASP-compatible servers. You can listen to music on your own server or discover music shared by connected hosts. Each host controls their own library and whether to share it over the network.
 
-You can deploy RiffVault locally for development, on **Cloudflare Workers**, or on your own server using **Docker / Portainer**. For self-hosted Docker installations, music can be uploaded through the webapp or indexed from an existing folder on the host server.
+You can deploy WASP locally for development, on **Cloudflare Workers**, or on your own server using **Docker / Portainer**. For self-hosted Docker installations, music can be uploaded through the webapp or indexed from an existing folder on the host server.
 
 > [!CAUTION]
 > **CHANGE THE DEFAULT ADMIN PASSWORD IMMEDIATELY.** Every fresh installation uses a known default credential. Anyone who can reach an installation that still uses it may be able to sign in as administrator. **Do not make your library public, open it to the internet, or enable “Share this library on the network” until you have changed the password.** Use a strong, unique password.
@@ -29,10 +29,10 @@ This runs the app locally for development. It does not publish your code or musi
 
 ## Cloudflare Workers deployment (from GitHub)
 
-1. Open this RiffVault repository on **GitHub** and click **Fork** to make your own copy in your GitHub account. If you have downloaded the project instead, upload its files to a repository in your account. Keep `package.json` and `wrangler.jsonc` at the repository root.
+1. Open this WASP repository on **GitHub** and click **Fork** to make your own copy in your GitHub account. If you have downloaded the project instead, upload its files to a repository in your account. Keep `package.json` and `wrangler.jsonc` at the repository root.
 2. Log in to the [Cloudflare dashboard](https://dash.cloudflare.com/). Enable **R2** for your Cloudflare account if prompted; the webapp uses **R2** for music/artwork and **D1** for library data.
 3. Go to **Workers & Pages → Create application**, then choose **GitHub / Import a repository**.
-4. Authorize Cloudflare to access your GitHub account and select **your fork** of RiffVault.
+4. Authorize Cloudflare to access your GitHub account and select **your fork** of WASP.
 5. Configure the Worker build:
    - **Root directory:** the repository root, where `package.json` and `wrangler.jsonc` are located.
    - **Build command:** leave empty.
@@ -45,11 +45,11 @@ Cloudflare can redeploy the Worker when changes are pushed to the connected GitH
 
 ## Docker deployment — Portainer (recommended)
 
-RiffVault can be hosted independently of Cloudflare, using Docker on a server, NAS, or other Docker-compatible host. The Docker Compose setup runs the app behind a web proxy in one container and keeps local application data in persistent Docker volumes.
+WASP can be hosted independently of Cloudflare, using Docker on a server, NAS, or other Docker-compatible host. The Docker Compose setup runs the app behind a web proxy in one container and keeps local application data in persistent Docker volumes.
 
 ### 1. Add the Git repository as a Portainer source
 
-1. Log in to **Portainer** and select the Docker environment where you want to run RiffVault.
+1. Log in to **Portainer** and select the Docker environment where you want to run WASP.
 2. Open **Stacks → Add stack**.
 3. Enter a stack name, for example `riffvault`.
 4. Under **Build method**, select **Repository**.
@@ -74,7 +74,7 @@ RiffVault can be hosted independently of Cloudflare, using Docker on a server, N
 
 ### 3. Map an existing folder containing music
 
-You **do not need to upload all your songs through the browser**. RiffVault can read an existing folder on your Docker host, including a NAS folder already mounted on that host.
+You **do not need to upload all your songs through the browser**. WASP can read an existing folder on your Docker host, including a NAS folder already mounted on that host.
 
 In the Portainer stack's **Environment variables**, add:
 
@@ -82,7 +82,7 @@ In the Portainer stack's **Environment variables**, add:
 | --- | --- | --- |
 | `MUSIC_FOLDER` | `/mnt/storage/Music` | Absolute path to your existing music folder **on the Docker host**. |
 
-The Compose file maps that folder into the container as `/music` **read-only**. RiffVault scans it and indexes its songs without moving or deleting the original files. Change `MUSIC_FOLDER` to your own path; for example:
+The Compose file maps that folder into the container as `/music` **read-only**. WASP scans it and indexes its songs without moving or deleting the original files. Change `MUSIC_FOLDER` to your own path; for example:
 
 - Linux server: `/srv/music`
 - NAS mount on the Docker host: `/mnt/nas/Music`

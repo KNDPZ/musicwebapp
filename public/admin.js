@@ -17,15 +17,27 @@ const mini = (src, label) => `<span class="art" data-i="${esc((label || "?").tri
 document.addEventListener("error", (e) => { if (e.target.tagName === "IMG") e.target.remove(); }, true);
 
 // ---------- sections (left menu) ----------
-const PANES = { collection: "Music collection", add: "Add music", playlists: "Playlists", requests: "Requests", settings: "General settings", account: "Account settings", network: "Network", danger: "Danger" };
+const PANES = { collection: "Music collection", add: "Add music", playlists: "Playlists", requests: "Requests", settings: "General settings", account: "Account settings", network: "Network", danger: "Danger", users: "Users" };
 function showPane() {
   const k = has(PANES, location.hash.slice(1)) ? location.hash.slice(1) : "collection";
   $("#anav").innerHTML = Object.entries(PANES).map(([id, label]) =>
     `<a class="nav-item${id === "danger" ? " dng" : ""}" href="#${id}"${id === k ? ' aria-current="page"' : ""}>${label}</a>`).join("");
   document.querySelectorAll(".pane").forEach((p) => p.classList.toggle("hidden", p.id !== "s-" + k));
+  if (k === "users") loadUsers();
   window.scrollTo(0, 0);
 }
 window.addEventListener("hashchange", showPane);
+async function loadUsers(){
+  const el = $("#usersList");
+  if (!el || $("#panel").classList.contains("hidden")) return;
+  el.textContent = "Loading registered users…";
+  try {
+    const r = await fetch("/api/admin/users", { headers: {accept:"application/json"} });
+    if (!r.ok) throw Error(`HTTP ${r.status}`);
+    const users = await r.json();
+    el.innerHTML = users.length ? `<table><thead><tr><th>Username</th><th>Hearted songs</th><th>Liked songs</th><th>Private playlists</th><th>Published playlists</th></tr></thead><tbody>${users.map(u=>`<tr><td><b>${esc(u.username)}</b></td><td>${Number(u.heart_songs)||0}</td><td>${Number(u.like_songs)||0}</td><td>${Number(u.private_playlists)||0}</td><td>${Number(u.public_playlists)||0}</td></tr>`).join("")}</tbody></table>` : `<p class="muted">No registered users yet.</p>`;
+  } catch { el.textContent = "Unable to load users."; }
+}
 
 async function show() {
   const { admin } = await (await fetch("/api/me")).json();
@@ -360,11 +372,12 @@ let site = null;
 function paintFavicon() {
   const on = !!(site && site.favicon);
   $("#favPrev").classList.toggle("hidden", !on); $("#favNone").classList.toggle("hidden", on); $("#favRm").classList.toggle("hidden", !on);
-  if (on) { $("#favPrev").src = `/site/favicon?v=${site.favicon}`; $("#favicon").href = `/site/favicon?v=${site.favicon}`; }
+  $("#favicon").href = on ? `/site/favicon?v=${site.favicon}` : "/wasp-icon.png";
+  if (on) { $("#favPrev").src = `/site/favicon?v=${site.favicon}`; }
 }
 async function loadSite() {
   try { site = await (await fetch("/api/site")).json(); } catch { return; }
-  $("#siteName").value = site.name; $("#tabTitle").value = site.title;
+  $("#siteName").value = site.name; $("#tabTitle").value = site.title; $("#brandIconOn").checked = !!site.show_brand_icon;
   $("#spOn").checked = site.ad.enabled; $("#spH").value = site.ad.height; $("#spCode").value = site.ad.html;
   document.title = `Admin · ${site.title || site.name}`;
   paintFavicon();
@@ -375,7 +388,7 @@ async function saveSettings(body, msgSel) {
   if (!r.ok) { flashMsg(msgSel, (await r.json().catch(() => ({}))).error || "Couldn't save.", true); return false; }
   site = await r.json(); flashMsg(msgSel, "Saved."); document.title = `Admin · ${site.title || site.name}`; return true;
 }
-$("#brandSave").addEventListener("click", () => saveSettings({ site_name: $("#siteName").value, tab_title: $("#tabTitle").value }, "#brandMsg"));
+$("#brandSave").addEventListener("click", () => saveSettings({ site_name: $("#siteName").value, tab_title: $("#tabTitle").value, show_brand_icon: $("#brandIconOn").checked }, "#brandMsg"));
 $("#favBtn").addEventListener("click", () => $("#favFile").click());
 $("#favFile").addEventListener("change", async (e) => {
   const f = e.target.files[0]; e.target.value = ""; if (!f) return;

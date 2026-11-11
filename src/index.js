@@ -76,6 +76,7 @@ function init(env) {
       "CREATE TABLE IF NOT EXISTS playlists (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, created_at INTEGER NOT NULL)",
       "CREATE TABLE IF NOT EXISTS playlist_tracks (playlist_id TEXT NOT NULL, track_id TEXT NOT NULL, added_at INTEGER NOT NULL, PRIMARY KEY (playlist_id, track_id))",
       "CREATE TABLE IF NOT EXISTS reactions (track_id TEXT NOT NULL, voter TEXT NOT NULL, kind TEXT NOT NULL, PRIMARY KEY (track_id, voter, kind))",
+      "CREATE TABLE IF NOT EXISTS user_song_reactions (user_id TEXT NOT NULL, track_id TEXT NOT NULL, kind TEXT NOT NULL, PRIMARY KEY(user_id, track_id, kind))",
       "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
       "CREATE TABLE IF NOT EXISTS entity_reactions (kind TEXT NOT NULL, entity TEXT NOT NULL, voter TEXT NOT NULL, reaction TEXT NOT NULL, PRIMARY KEY (kind, entity, voter, reaction))",
       "CREATE TABLE IF NOT EXISTS artist_similar (name TEXT PRIMARY KEY, list TEXT NOT NULL, fetched_at INTEGER NOT NULL)",
@@ -107,6 +108,10 @@ function init(env) {
     try { await q("ALTER TABLE sessions ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'").run(); } catch {}
     try { await q("ALTER TABLE sessions ADD COLUMN user_id TEXT").run(); } catch {}
     try { await q("INSERT OR IGNORE INTO settings (key, value) VALUES ('admin_username', 'admin')").run(); } catch {}
+    // WASP rebrand: update only old product defaults, never user-custom site names.
+    try { await q("INSERT OR IGNORE INTO settings (key,value) VALUES ('site_name','WASP')").run(); } catch {}
+    try { await q("UPDATE settings SET value = 'WASP' WHERE key = 'site_name' AND value IN ('Music','RiffVault','RiffVault 🎧')").run(); } catch {}
+    try { await q("UPDATE settings SET value = 'WASP' WHERE key = 'tab_title' AND value IN ('Music','RiffVault','RiffVault 🎧')").run(); } catch {}
     // Unique index on hash: fails if the library already has duplicate file hashes.
     // Do not take the site down for that; upload logic still dedupes by checking the column.
     try { await q("CREATE UNIQUE INDEX IF NOT EXISTS idx_tracks_hash ON tracks(hash)").run(); } catch (e) {
@@ -163,7 +168,8 @@ async function siteSettings(DB) {
   const rows = (await DB.prepare("SELECT key, value FROM settings").all()).results;
   const s = Object.fromEntries(rows.map((r) => [r.key, r.value]));
   return {
-    name: s.site_name || "Music", title: s.tab_title || "", favicon: Number(s.favicon_v) || 0,
+    name: s.site_name || "WASP", title: s.tab_title || "", favicon: Number(s.favicon_v) || 0,
+    show_brand_icon: s.show_brand_icon === "1",
     ad: { enabled: s.ad_enabled === "1", html: s.ad_html || "", height: Number(s.ad_height) || 340 },
   };
 }
@@ -969,6 +975,13 @@ async function api(req, env, url, ctx) {
     } else {
       stmts.push(DB.prepare("DELETE FROM reactions WHERE track_id = ? AND voter = ? AND kind = ?").bind(id, voter, kind));
     }
+    const signedIn = await sessionInfo(req, env);
+    if (signedIn?.role === "user" && signedIn.user_id) {
+      if (b.on) {
+        stmts.push(DB.prepare("INSERT OR IGNORE INTO user_song_reactions (user_id,track_id,kind) VALUES (?,?,?)").bind(signedIn.user_id,id,kind));
+        if (kind === "like" || kind === "dislike") stmts.push(DB.prepare("DELETE FROM user_song_reactions WHERE user_id = ? AND track_id = ? AND kind = ?").bind(signedIn.user_id,id,kind === "like" ? "dislike" : "like"));
+      } else stmts.push(DB.prepare("DELETE FROM user_song_reactions WHERE user_id = ? AND track_id = ? AND kind = ?").bind(signedIn.user_id,id,kind));
+    }
     await DB.batch(stmts);
     const c = await DB.prepare(
       `SELECT COALESCE(SUM(kind = 'heart'), 0) AS hearts, COALESCE(SUM(kind = 'like'), 0) AS likes, COALESCE(SUM(kind = 'dislike'), 0) AS dislikes
@@ -1149,6 +1162,18 @@ async function api(req, env, url, ctx) {
   const sid = auth?.token;
   if (!sid || auth.role !== "admin") return json({ error: "Admin access required." }, 403);
 
+  // Read-only administrative overview. Anonymous historical reactions cannot be
+  // attributed to accounts retroactively, so only authenticated actions are counted.
+  if (path === "/api/admin/users" && m === "GET") {
+    const { results } = await DB.prepare(`
+      SELECT u.id, u.username, u.created_at,
+        (SELECT COUNT(*) FROM user_song_reactions r WHERE r.user_id=u.id AND r.kind='heart') AS heart_songs,
+        (SELECT COUNT(*) FROM user_song_reactions r WHERE r.user_id=u.id AND r.kind='like') AS like_songs,
+        (SELECT COUNT(*) FROM user_playlists p WHERE p.user_id=u.id AND p.is_public=0) AS private_playlists,
+        (SELECT COUNT(*) FROM user_playlists p WHERE p.user_id=u.id AND p.is_public=1) AS public_playlists
+      FROM user_accounts u ORDER BY u.created_at DESC, u.username COLLATE NOCASE`).all();
+    return json(results);
+  }
   if (path === "/api/admin/bio/refresh" && m === "POST") {
     const b = await req.json().catch(() => ({}));
     const name = clean(b.name);
@@ -1165,7 +1190,8 @@ async function api(req, env, url, ctx) {
     const b = await req.json().catch(() => ({}));
     const stmts = [];
     const set = (k, v) => stmts.push(DB.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(k, String(v)));
-    if ("site_name" in b) set("site_name", clean(b.site_name, 60) || "Music");
+    if ("site_name" in b) set("site_name", clean(b.site_name, 60) || "WASP");
+    if ("show_brand_icon" in b) set("show_brand_icon", b.show_brand_icon ? "1" : "0");
     if ("tab_title" in b) set("tab_title", clean(b.tab_title, 80));
     if ("ad_enabled" in b) set("ad_enabled", b.ad_enabled ? "1" : "0");
     if ("ad_html" in b) {

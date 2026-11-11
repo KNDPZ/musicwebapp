@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<title>Admin</title>
-<link rel="icon" id="favicon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Ctext y=%27.9em%27 font-size=%2790%27%3E🎵%3C/text%3E%3C/svg%3E">
+<title>Admin · WASP</title>
+<link rel="icon" id="favicon" href="/wasp-icon.png">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body style="--ph:0px;padding-bottom:0">
@@ -29,7 +29,7 @@
   <aside class="side">
     <a class="brand" href="/" title="Back to the site">Admin</a>
     <nav id="anav" aria-label="Admin sections"></nav>
-    <div class="admin-account-shortcut"><a class="admin-account-pill" href="/#user/private" title="Open my playlists"><span>My playlists</span><svg viewBox="0 0 24 24" width="19" height="19" aria-hidden="true"><circle cx="12" cy="8" r="4" fill="currentColor"/><path d="M4 21c0-5 3-8 8-8s8 3 8 8" fill="currentColor"/></svg></a></div>
+
     <div style="margin-top:16px;border-top:1px solid var(--line);padding-top:12px">
       <a class="nav-item" href="/">View site</a>
       <button class="nav-item" id="logout" type="button" style="width:100%;background:none;border:0;font:inherit;font-weight:600;cursor:pointer;text-align:left">Log out</button>
@@ -112,7 +112,8 @@
         <h2>Branding</h2>
         <div class="form" style="flex-direction:column;align-items:stretch;max-width:520px">
           <label for="siteName" class="muted">Site name (top left of the site)</label>
-          <input id="siteName" type="text" maxlength="60" placeholder="Music">
+          <input id="siteName" type="text" maxlength="60" placeholder="WASP">
+          <label class="brand-icon-toggle" for="brandIconOn"><input id="brandIconOn" type="checkbox"> Show browser icon before site name</label>
           <label for="tabTitle" class="muted">Browser tab name</label>
           <input id="tabTitle" type="text" maxlength="80" placeholder="Same as the site name if empty">
           <span class="muted">Browser icon</span>
@@ -200,6 +201,15 @@
         <p class="muted" style="margin-top:0">Deletes every song, playlist, request, artwork file, play count and reaction. Your admin login, site name, browser icon and ad are kept.</p>
         <button class="btn danger" id="cleanBtn" type="button">Clean database…</button>
         <p class="msg" id="cleanMsg" role="status"></p>
+      </div>
+    </section>
+    <!-- Read-only registered user statistics -->
+    <section class="pane hidden" id="s-users">
+      <h1>Users</h1>
+      <div class="card users-summary">
+        <h2>Registered accounts</h2>
+        <p class="muted">Song reactions are counted when a signed-in user reacts. Earlier anonymous hearts and likes cannot be attributed to accounts.</p>
+        <div id="usersList" aria-live="polite">Open this page to load users.</div>
       </div>
     </section>
   </div>
