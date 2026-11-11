@@ -463,3 +463,13 @@ body.up-open #lyrics.full{right:340px}
 .spotify-result .t{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis}
 .spotify-result small{display:block;color:var(--muted);font-weight:400;margin-top:4px}
 .spotify-error{line-height:1.5}
+
+/* Admin Requests → Spotify settings (WASP dark theme) */
+.spotify-config-form{display:flex;flex-direction:column;align-items:stretch;gap:9px;max-width:540px;margin-top:20px}
+.spotify-config-form label{font-weight:600;font-size:14px}
+.spotify-config-form input{width:100%;max-width:540px}
+.spotify-config-form .muted{margin:0 0 9px}
+.spotify-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:8px}
+.spotify-config-form .msg{min-height:0;margin:0}
+.spotify-config-footnote{margin:24px 0 0;max-width:680px;line-height:1.6}
+#reqSpotifyPanel>.card{max-width:780px}

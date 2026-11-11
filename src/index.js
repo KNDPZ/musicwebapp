@@ -79,6 +79,7 @@ function init(env) {
       "CREATE TABLE IF NOT EXISTS peer_reaction_tracks (id TEXT PRIMARY KEY, origin TEXT NOT NULL, remote_id TEXT NOT NULL, created_at INTEGER NOT NULL, UNIQUE(origin,remote_id))",
       "CREATE TABLE IF NOT EXISTS user_song_reactions (user_id TEXT NOT NULL, track_id TEXT NOT NULL, kind TEXT NOT NULL, PRIMARY KEY(user_id, track_id, kind))",
       "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+      "CREATE TABLE IF NOT EXISTS spotify_credentials (id INTEGER PRIMARY KEY CHECK (id = 1), client_id TEXT NOT NULL, secret_cipher TEXT NOT NULL, updated_at INTEGER NOT NULL)",
       "CREATE TABLE IF NOT EXISTS entity_reactions (kind TEXT NOT NULL, entity TEXT NOT NULL, voter TEXT NOT NULL, reaction TEXT NOT NULL, PRIMARY KEY (kind, entity, voter, reaction))",
       "CREATE TABLE IF NOT EXISTS artist_similar (name TEXT PRIMARY KEY, list TEXT NOT NULL, fetched_at INTEGER NOT NULL)",
       "CREATE TABLE IF NOT EXISTS artist_info (name TEXT PRIMARY KEY, text TEXT, url TEXT, wtitle TEXT, rev TEXT, genres TEXT NOT NULL DEFAULT '[]', checked_at INTEGER NOT NULL)",
@@ -395,19 +396,74 @@ async function spotifyPlaylist(raw) {
   const image = safeImage(ov.thumbnail_url) || (ev && ev.image) || null;
   return { kind: "playlist", title, artist: "", album: "", image, url: link, dedupe: `playlist|${m[1]}`, meta: ev && ev.tracks.length ? playlistMeta(ev.tracks) : null };
 }
+// Private Spotify credentials saved by an administrator. The client secret is
+// AES-GCM encrypted with an installation key that lives outside D1:
+// SPOTIFY_SETTINGS_KEY, or the existing persistent Docker SCANNER_SECRET.
+// No secret is returned to a browser or stored in the site's public settings.
+function spotifySettingsKey(env) {
+  return String(env.SPOTIFY_SETTINGS_KEY || env.SCANNER_SECRET || "").trim();
+}
+async function spotifyCipherKey(env) {
+  const passphrase = spotifySettingsKey(env);
+  if (passphrase.length < 24) throw new Error("Credential encryption requires SPOTIFY_SETTINGS_KEY (or the Docker installation secret). Set it on the server before saving.");
+  const material = await crypto.subtle.digest("SHA-256", enc.encode("WASP-SPOTIFY-SETTINGS-v1\0" + passphrase));
+  return crypto.subtle.importKey("raw", material, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+}
+function bytesTo64(bytes) {
+  return btoa(String.fromCharCode(...new Uint8Array(bytes)));
+}
+function bytesFrom64(str) {
+  return Uint8Array.from(atob(str), c => c.charCodeAt(0));
+}
+async function encryptSpotifySecret(env, secret) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await spotifyCipherKey(env);
+  const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: enc.encode("wasp-spotify-v1") }, key, enc.encode(secret));
+  return "v1:" + bytesTo64(iv) + ":" + bytesTo64(ciphertext);
+}
+async function decryptSpotifySecret(env, cipher) {
+  const parts = String(cipher).split(":");
+  if (parts.length !== 3 || parts[0] !== "v1") throw new Error("Unknown encrypted Spotify credentials format.");
+  const key = await spotifyCipherKey(env);
+  const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: bytesFrom64(parts[1]), additionalData: enc.encode("wasp-spotify-v1") }, key, bytesFrom64(parts[2]));
+  return new TextDecoder().decode(plain);
+}
+async function spotifySavedConfig(env) {
+  return env.DB.prepare("SELECT client_id, secret_cipher, updated_at FROM spotify_credentials WHERE id = 1").first();
+}
+async function spotifyCredentials(env) {
+  const saved = await spotifySavedConfig(env);
+  if (saved) return { id: saved.client_id, secret: await decryptSpotifySecret(env, saved.secret_cipher), source: "admin" };
+  return { id: String(env.SPOTIFY_CLIENT_ID || "").trim(), secret: String(env.SPOTIFY_CLIENT_SECRET || "").trim(), source: "environment" };
+}
+function spotifyConfigResponse(saved, env, locked = false) {
+  const eid = String(env.SPOTIFY_CLIENT_ID || "").trim(), es = String(env.SPOTIFY_CLIENT_SECRET || "").trim();
+  return {
+    client_id: saved?.client_id || eid,
+    secret_configured: !!saved || !!(eid && es),
+    saved_in_admin: !!saved,
+    source: saved ? "admin" : (eid && es ? "environment" : "none"),
+    updated_at: saved?.updated_at || null,
+    storage_ready: spotifySettingsKey(env).length >= 24,
+    locked,
+  };
+}
 // Optional Spotify Web API playlist search. Credentials are server-side secrets.
 let spotifyAuthCache={id:"",token:"",expires:0};
 async function spotifySearchPlaylists(env, q) {
-  const id=String(env.SPOTIFY_CLIENT_ID||"").trim(), secret=String(env.SPOTIFY_CLIENT_SECRET||"").trim();
-  if (!id || !secret) return json({error:"Spotify playlist search needs SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in the server environment. You can still paste a playlist link."},503);
-  if (spotifyAuthCache.id!==id || spotifyAuthCache.expires<Date.now()) {
+  let id, secret;
+  try { ({ id, secret } = await spotifyCredentials(env)); }
+  catch { return json({error:"Saved Spotify credentials could not be unlocked. Ask the administrator to check the server encryption key."},503); }
+  if (!id || !secret) return json({error:"Spotify playlist search is not configured. An administrator can add credentials under Admin → Requests → Spotify settings. You can still paste a playlist link."},503);
+  const cacheKey = id + ":" + await sha256(secret);
+  if (spotifyAuthCache.id!==cacheKey || spotifyAuthCache.expires<Date.now()) {
     const token=await fetch("https://accounts.spotify.com/api/token",{method:"POST",
       headers:{authorization:"Basic "+btoa(id+":"+secret),"content-type":"application/x-www-form-urlencoded"},
       body:"grant_type=client_credentials",signal:AbortSignal.timeout(10000)});
     if(!token.ok)return json({error:"Spotify rejected the configured credentials. Please check the Spotify app and permissions."},502);
     const payload=await token.json();
     if(!payload.access_token)return json({error:"Spotify did not provide a valid access token."},502);
-    spotifyAuthCache={id,token:payload.access_token,expires:Date.now()+(Math.max(60,Number(payload.expires_in)||3600)-30)*1000};
+    spotifyAuthCache={id:cacheKey,token:payload.access_token,expires:Date.now()+(Math.max(60,Number(payload.expires_in)||3600)-30)*1000};
   }
   const target="https://api.spotify.com/v1/search?"+new URLSearchParams({q,type:"playlist",limit:"10"});
   const r=await fetch(target,{headers:{authorization:"Bearer "+spotifyAuthCache.token,accept:"application/json"},signal:AbortSignal.timeout(10000)});
@@ -1300,6 +1356,50 @@ async function api(req, env, url, ctx) {
       await DB.prepare("INSERT INTO settings (key, value) VALUES ('favicon_v', '0') ON CONFLICT(key) DO UPDATE SET value = '0'").run();
       return json({ ok: true, favicon: 0 });
     }
+  }
+  // Private administrator-only Spotify search settings. Never return a client
+  // secret, not even an encrypted copy. A blank secret in PUT means "keep".
+  if (path === "/api/admin/spotify-config") {
+    if (m === "GET") {
+      const saved = await spotifySavedConfig(env);
+      let locked = false;
+      if (saved) {
+        try { await decryptSpotifySecret(env, saved.secret_cipher); }
+        catch { locked = true; }
+      }
+      return json(spotifyConfigResponse(saved, env, locked));
+    }
+    if (m === "PUT") {
+      if (req.headers.get("content-type")?.split(";")[0] !== "application/json")
+        return json({ error: "JSON request required." }, 415);
+      if (Number(req.headers.get("content-length") || 0) > 4096) return json({ error: "Request too large." }, 413);
+      let b;
+      try { b = await req.json(); }
+      catch { return json({ error: "Invalid JSON." }, 400); }
+      const id = typeof b?.client_id === "string" ? b.client_id.trim() : "";
+      const supplied = typeof b?.client_secret === "string" ? b.client_secret.trim() : "";
+      if (!/^[a-zA-Z0-9_-]{8,128}$/.test(id)) return json({ error: "Enter a valid Spotify Client ID." }, 400);
+      if (supplied && (!/^[\x21-\x7e]{8,256}$/.test(supplied))) return json({ error: "Client secret must have 8–256 non-space characters." }, 400);
+      const saved = await spotifySavedConfig(env);
+      if (!supplied && !saved) return json({ error: "Enter the Spotify Client Secret." }, 400);
+      try {
+        const cipher = supplied ? await encryptSpotifySecret(env, supplied) : saved.secret_cipher;
+        // Verify the old secret is actually decryptable if it is retained.
+        if (!supplied) await decryptSpotifySecret(env, cipher);
+        await DB.prepare("INSERT INTO spotify_credentials(id,client_id,secret_cipher,updated_at) VALUES (1,?,?,?) ON CONFLICT(id) DO UPDATE SET client_id=excluded.client_id, secret_cipher=excluded.secret_cipher, updated_at=excluded.updated_at")
+          .bind(id, cipher, Date.now()).run();
+        spotifyAuthCache = { id: "", token: "", expires: 0 };
+        return json({ ok: true, ...spotifyConfigResponse(await spotifySavedConfig(env), env) });
+      } catch (e) {
+        return json({ error: e instanceof Error ? e.message : "Unable to save encrypted Spotify settings." }, 503);
+      }
+    }
+    if (m === "DELETE") {
+      await DB.prepare("DELETE FROM spotify_credentials WHERE id = 1").run();
+      spotifyAuthCache = { id: "", token: "", expires: 0 };
+      return json({ ok: true, ...spotifyConfigResponse(null, env) });
+    }
+    return json({ error: "Method not allowed." }, 405);
   }
   if (path === "/api/admin/requests" && m === "GET") {
     const rows = (await DB.prepare("SELECT id, kind, title, artist, album, image, url, created_at, meta FROM requests WHERE status = 'active' ORDER BY created_at, rowid").all()).results;

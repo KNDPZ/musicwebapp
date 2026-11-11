@@ -97,11 +97,38 @@
 
     <!-- Requests -->
     <section class="pane hidden" id="s-requests">
-      <h1>Request queue</h1>
-      <div class="card">
-        <p class="muted" style="margin-top:0">Songs, albums and artists leave the queue by themselves when a matching song is uploaded, and move to Previous requests. For a Spotify playlist, Refresh reads the playlist again and checks which of its songs are already in the library; when all of them are, the playlist is added to the Playlists tab with Spotify's picture and leaves the queue. Open the arrow to see what is still missing.</p>
-        <p class="msg" id="reqMsg" role="status"></p>
-        <div id="reqRows" class="muted">The queue is empty.</div>
+      <h1>Requests</h1>
+      <div class="tabs sub" role="tablist" aria-label="Request administration">
+        <button class="tab" id="reqTabQueue" type="button" role="tab" aria-controls="reqQueuePanel" aria-selected="true">Request queue</button>
+        <button class="tab" id="reqTabSpotify" type="button" role="tab" aria-controls="reqSpotifyPanel" aria-selected="false">Spotify settings</button>
+      </div>
+      <div id="reqQueuePanel" role="tabpanel" aria-labelledby="reqTabQueue">
+        <div class="card">
+          <p class="muted" style="margin-top:0">Songs, albums and artists leave the queue by themselves when a matching song is uploaded, and move to Previous requests. For a Spotify playlist, Refresh reads the playlist again and checks which of its songs are already in the library; when all of them are, the playlist is added to the Playlists tab with Spotify's picture and leaves the queue. Open the arrow to see what is still missing.</p>
+          <p class="msg" id="reqMsg" role="status"></p>
+          <div id="reqRows" class="muted">The queue is empty.</div>
+        </div>
+      </div>
+      <div id="reqSpotifyPanel" class="hidden" role="tabpanel" aria-labelledby="reqTabSpotify">
+        <div class="card">
+          <h2>Spotify playlist search</h2>
+          <p class="muted">Enter your Spotify Developer app credentials to enable playlist search in <strong>Request → Make a request → Playlist</strong>. These settings apply only to this WASP server.</p>
+          <p class="muted hidden" id="spotifyHttpsWarning" role="alert" style="color:var(--danger)">You are using HTTP. Switch to HTTPS before entering a Spotify Client Secret so it cannot be intercepted in transit.</p>
+          <form id="spotifySettingsForm" class="spotify-config-form" autocomplete="off">
+            <label for="spotifyClientId">Spotify Client ID</label>
+            <input id="spotifyClientId" type="text" maxlength="128" required spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="Your Spotify Client ID">
+            <label for="spotifyClientSecret">Spotify Client Secret</label>
+            <input id="spotifyClientSecret" type="password" maxlength="256" autocomplete="new-password" spellcheck="false" placeholder="Enter or replace the client secret">
+            <p class="muted" id="spotifySecretHint">The secret is encrypted on the server and is never displayed after saving.</p>
+            <div class="form spotify-actions">
+              <button class="btn" id="spotifyConfigSave" type="submit">Save credentials</button>
+              <button class="btn ghost" id="spotifyConfigDelete" type="button">Remove saved credentials</button>
+            </div>
+            <p class="msg" id="spotifyConfigMsg" role="status" aria-live="polite"></p>
+            <p class="muted" id="spotifyConfigState"></p>
+          </form>
+          <p class="muted spotify-config-footnote">Get credentials from the <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener noreferrer">Spotify Developer Dashboard</a>. The client secret stays server-side, and Spotify's API policies still apply. The manual Spotify playlist link option works without credentials.</p>
+        </div>
       </div>
     </section>
 

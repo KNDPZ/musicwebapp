@@ -19,11 +19,14 @@ document.addEventListener("error", (e) => { if (e.target.tagName === "IMG") e.ta
 // ---------- sections (left menu) ----------
 const PANES = { collection: "Music collection", add: "Add music", playlists: "Playlists", requests: "Requests", settings: "General settings", account: "Account settings", network: "Network", danger: "Danger", users: "Users" };
 function showPane() {
-  const k = has(PANES, location.hash.slice(1)) ? location.hash.slice(1) : "collection";
+  const route = location.hash.slice(1);
+  const section = route.split("/")[0];
+  const k = has(PANES, section) ? section : "collection";
   $("#anav").innerHTML = Object.entries(PANES).map(([id, label]) =>
     `<a class="nav-item${id === "danger" ? " dng" : ""}" href="#${id}"${id === k ? ' aria-current="page"' : ""}>${label}</a>`).join("");
   document.querySelectorAll(".pane").forEach((p) => p.classList.toggle("hidden", p.id !== "s-" + k));
   if (k === "users") loadUsers();
+  if (k === "requests") showRequestTab(route === "requests/spotify");
   window.scrollTo(0, 0);
 }
 window.addEventListener("hashchange", showPane);
@@ -191,6 +194,75 @@ $("#plImg").addEventListener("change", async (e) => {
   const r = await fetch(`/api/admin/playlists/${imgFor}/cover`, { method: "PUT", headers: { "content-type": f.type }, body: f });
   if (r.ok) { msg.className = "msg"; msg.textContent = "Playlist image updated."; loadPlaylists(); }
   else msg.textContent = (await r.json().catch(() => ({}))).error || "Upload failed.";
+});
+
+// Spotify settings live in Requests, not in public site branding settings.
+let spotifyConfigLoaded = false;
+function showRequestTab(spotify) {
+  $("#spotifyHttpsWarning").classList.toggle("hidden", location.protocol === "https:" || ["localhost", "127.0.0.1", ""].includes(location.hostname));
+  $("#reqTabQueue").setAttribute("aria-selected", String(!spotify));
+  $("#reqTabSpotify").setAttribute("aria-selected", String(spotify));
+  $("#reqQueuePanel").classList.toggle("hidden", spotify);
+  $("#reqSpotifyPanel").classList.toggle("hidden", !spotify);
+  if (spotify && !spotifyConfigLoaded) loadSpotifyConfig();
+}
+$("#reqTabQueue").addEventListener("click", () => { location.hash = "requests"; showRequestTab(false); });
+$("#reqTabSpotify").addEventListener("click", () => { location.hash = "requests/spotify"; showRequestTab(true); });
+async function loadSpotifyConfig() {
+  const state = $("#spotifyConfigState"), msg = $("#spotifyConfigMsg");
+  state.textContent = "Loading Spotify settings…";
+  try {
+    const r = await fetch("/api/admin/spotify-config", { headers: { accept: "application/json" }, cache: "no-store" });
+    const data = await r.json();
+    if (!r.ok) throw Error(data.error || "Unable to load settings.");
+    spotifyConfigLoaded = true;
+    $("#spotifyClientId").value = data.client_id || "";
+    $("#spotifyClientSecret").value = "";
+    $("#spotifySecretHint").textContent = data.saved_in_admin
+      ? "A secret is saved. Leave this field empty to keep it, or enter a new secret to replace it."
+      : (data.secret_configured ? "Credentials are supplied by the server environment. Enter new values to override them." : "Enter the Client ID and Client Secret from your Spotify Developer app.");
+    $("#spotifyConfigDelete").disabled = !data.saved_in_admin;
+    state.textContent = data.locked
+      ? "Saved credentials cannot be decrypted with the current server key. Enter a new secret to repair them."
+      : (data.saved_in_admin ? "Spotify credentials saved securely on this server." : data.source === "environment" ? "Using credentials supplied by the server environment." : "Spotify playlist search is not configured.");
+    if (!data.storage_ready) {
+      state.textContent += " To save credentials in this page, first configure SPOTIFY_SETTINGS_KEY as a server secret.";
+    }
+    msg.textContent = "";
+  } catch (e) {
+    spotifyConfigLoaded = false;
+    state.textContent = "";
+    flashMsg("#spotifyConfigMsg", e.message || "Unable to load settings.", true);
+  }
+}
+$("#spotifySettingsForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const save = $("#spotifyConfigSave");
+  const id = $("#spotifyClientId").value.trim(), secret = $("#spotifyClientSecret").value;
+  save.disabled = true;
+  try {
+    const r = await post("/api/admin/spotify-config", { client_id: id, client_secret: secret }, "PUT");
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw Error(d.error || "Unable to save Spotify credentials.");
+    $("#spotifyClientSecret").value = "";
+    spotifyConfigLoaded = false;
+    await loadSpotifyConfig();
+    flashMsg("#spotifyConfigMsg", "Spotify credentials saved. Playlist search will use them if Spotify grants API access.");
+  } catch (e) { flashMsg("#spotifyConfigMsg", e.message, true); }
+  finally { save.disabled = false; }
+});
+$("#spotifyConfigDelete").addEventListener("click", async () => {
+  if (!confirm("Remove saved Spotify credentials from this server? The paste-link option will still work.")) return;
+  const btn = $("#spotifyConfigDelete"); btn.disabled = true;
+  try {
+    const r = await fetch("/api/admin/spotify-config", { method: "DELETE" });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw Error(d.error || "Unable to remove credentials.");
+    spotifyConfigLoaded = false;
+    await loadSpotifyConfig();
+    flashMsg("#spotifyConfigMsg", "Saved Spotify credentials removed.");
+  } catch (e) { flashMsg("#spotifyConfigMsg", e.message, true); }
+  finally { btn.disabled = false; }
 });
 
 // ---------- requests ----------
