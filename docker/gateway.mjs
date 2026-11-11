@@ -3,12 +3,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {parseFile} from 'music-metadata';
+import {proxyToWorker} from './proxy.mjs';
+import {createPeerRelay} from './peer-relay.mjs';
 
 const roots=(process.env.MUSIC_SCAN_PATHS||'/music').split(',').map(x=>x.trim()).filter(Boolean);
 const port=Number(process.env.GATEWAY_PORT||8788), worker='http://127.0.0.1:8787';
 const secret=process.env.SCANNER_SECRET;
 const scanInterval=Math.max(60,Number(process.env.MUSIC_SCAN_INTERVAL||300))*1000;
 const catalogue=new Map(), covers=new Map();
+const peerRelay=createPeerRelay({worker});
 const supported=/\.(mp3|flac|m4a|mp4|ogg|opus|wav|aac)$/i;
 function fileId(p){return 'folder-'+crypto.createHash('sha1').update(p).digest('hex');}
 async function walk(root,found){
@@ -65,14 +68,10 @@ const server=http.createServer(async(req,res)=>{
   const cover=covers.get(u.searchParams.get('id'));if(!cover){res.writeHead(404);res.end();return;}
   res.writeHead(200,{'content-type':cover.type,'cache-control':'public, max-age=3600'});res.end(cover.data);return;
  }
- try{
-  const headers={...req.headers};delete headers.host;delete headers.connection;
-  const upstream=await fetch(worker+req.url,{method:req.method,headers,body:['GET','HEAD'].includes(req.method)?undefined:req,duplex:'half',redirect:'manual'});
-  const responseHeaders=Object.fromEntries(upstream.headers);
-  res.writeHead(upstream.status,responseHeaders);
-  if(req.method==='HEAD'||!upstream.body){res.end();return;}
-  const {Readable}=await import('node:stream');Readable.fromWeb(upstream.body).on('error',()=>res.destroy()).pipe(res);
- }catch(e){console.error('Gateway error',e);if(!res.headersSent)res.writeHead(502);res.end();}
+ try { if (await peerRelay.handle(req,res)) return; }
+ catch (error) { console.error('Peer relay error',error.message); if(!res.headersSent)res.writeHead(502);res.end();return; }
+ // Wrangler HTML, audio and assets must be streamed without decompression.
+ proxyToWorker(req,res);
 });
 server.listen(port,'127.0.0.1',()=>console.log('RiffVault gateway listening on',port));
 setTimeout(scan,7000);setInterval(scan,scanInterval);

@@ -7,12 +7,12 @@
 }
 
 :80 {
-	reverse_proxy 127.0.0.1:8787
+	reverse_proxy 127.0.0.1:8788
 }
 
 :443 {
 	tls {$TLS_ARGS:internal}
-	reverse_proxy 127.0.0.1:8787 {
+	reverse_proxy 127.0.0.1:8788 {
 		header_up CF-Connecting-IP {remote_host}
 		flush_interval -1
 	}

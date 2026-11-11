@@ -1,16 +1,36 @@
 import { radioIds } from "/radio.js";
 import { artistArt as _artistArt, albumArt as _albumArt, albumName, artistsOf, artistLine, primaryArtist, adDoc, AD_SANDBOX } from "/art.js";
-// Prefix peer origin so remote artwork and audio load from the peer server.
+// v13: Docker injects same-origin relay_base in the local peer registry.
+// Cloudflare Workers keep using their existing direct-peer behavior.
+const peerRelays = new Map();
+const peerSourceOrigins = new Map();
+function registeredPeerOrigin(origin) { return peerSourceOrigins.get(origin) || origin; }
+function peerResourceUrl(origin, resource) {
+  const base=peerRelays.get(String(origin||'').replace(/\/$/,'')) || String(origin||'').replace(/\/$/,'');
+  return base + resource;
+}
+function registerPeerRelay(peer) {
+  if (!peer || !peer.url) return;
+  const origin=String(peer.url).replace(/\/$/,'');
+  const base=peer.relay_base || origin;
+  peerRelays.set(origin,base);
+  peerSourceOrigins.set(origin,origin);
+  for (const alias of (Array.isArray(peer.origin_aliases) ? peer.origin_aliases : [])) {
+    try { const canonical=new URL(alias).origin;peerRelays.set(canonical,base);peerSourceOrigins.set(canonical,origin); } catch {}
+  }
+}
+// Prefix peer origin so remote artwork and audio are fetched from Docker's
+// local gateway when available, rather than from a browser-blocked Tailscale IP.
 const albumArt = (t) => {
   // A peer track's public id is namespaced here, but its artwork endpoint expects
   // the original ID assigned by that peer (not origin|id).
   const u = _albumArt(t && t.remote_id ? {...t,id:t.remote_id} : t);
-  return t && t.origin && u.startsWith("/") ? t.origin + u : u;
+  return t && t.origin && u.startsWith("/") ? peerResourceUrl(t.origin,u) : u;
 };
 const artistArt = (name, origin) => {
   const u = _artistArt(name);
   const peerOrigin = origin || (typeof tracks !== "undefined" && tracks.find(t=>t.origin && artistsOf(t).includes(name))?.origin);
-  return peerOrigin && u.startsWith("/") ? peerOrigin + u : u;
+  return peerOrigin && u.startsWith("/") ? peerResourceUrl(peerOrigin,u) : u;
 };
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -87,12 +107,12 @@ document.addEventListener("error", (e) => {
   if(!img.dataset.fallback && img.src.includes("/art/album?")){
     const src=new URL(img.src);const artist=src.searchParams.get("artist"),album=src.searchParams.get("album");
     const candidate=tracks.find(t=>primaryArtist(t)===artist&&albumName(t)===album);
-    if(candidate){img.dataset.fallback="1";img.src=(candidate.origin||"")+"/art/track?id="+enc(candidate.id);return;}
+    if(candidate){img.dataset.fallback="1";img.src=candidate.origin ? peerResourceUrl(candidate.origin,"/art/track?id="+enc(candidate.remote_id||candidate.id)) : "/art/track?id="+enc(candidate.id);return;}
   }
   if(!img.dataset.fallback && img.src.includes("/art/artist?")){
     const src=new URL(img.src);const artist=src.searchParams.get("name");
     const candidate=tracks.find(t=>artistsOf(t).includes(artist));
-    if(candidate){img.dataset.fallback="1";img.src=(candidate.origin||"")+"/art/track?id="+enc(candidate.id);return;}
+    if(candidate){img.dataset.fallback="1";img.src=candidate.origin ? peerResourceUrl(candidate.origin,"/art/track?id="+enc(candidate.remote_id||candidate.id)) : "/art/track?id="+enc(candidate.id);return;}
   }
   img.remove();
 }, true);
@@ -119,13 +139,14 @@ async function loadPeers(localIds) {
     const r = await fetch("/api/network/peers");
     if (r.ok) peers = arr(await r.json());
   } catch { return []; }
+  peers.forEach(registerPeerRelay);
   const remote = [];
   await Promise.all(peers.map(async (peer) => {
     if (!peer.url) return;
     try {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 10000);
-      const r = await fetch(peer.url.replace(/\/$/, "") + "/api/tracks", { signal: ctrl.signal, headers: { accept: "application/json" } });
+      const r = await fetch((peer.relay_base || peer.url).replace(/\/$/, "") + "/api/tracks", { signal: ctrl.signal, headers: { accept: "application/json" } });
       clearTimeout(timer);
       if (!r.ok) return;
       const list = arr(await r.json());
@@ -202,7 +223,9 @@ async function load() {
     await Promise.all(peers.map(async peer=>{
       try {
         const origin=peer.url.replace(/\/$/,"");
-        const [a,b]=await Promise.allSettled([fetch(origin+"/api/playlists"),fetch(origin+"/api/user-playlists")]);
+        registerPeerRelay(peer);
+        const via=peer.relay_base || origin;
+        const [a,b]=await Promise.allSettled([fetch(via+"/api/playlists"),fetch(via+"/api/user-playlists")]);
         const system=a.status==="fulfilled"&&a.value.ok?arr(await a.value.json()):[];
         const users=b.status==="fulfilled"&&b.value.ok?arr(await b.value.json()):[];
         const lists=[...system.map(p=>({...p,kind:"server"})),...users.map(p=>({...p,kind:"user"}))];
@@ -764,7 +787,11 @@ function playlistCoverUrl(p) {
   if (raw) {
     try {
       const u=new URL(raw,p.origin || location.origin);
-      if (u.protocol === 'https:' || u.protocol === 'http:') return u.href;
+      if (u.protocol === 'https:' || u.protocol === 'http:') {
+        if (p.origin && (u.origin===new URL(p.origin).origin || u.pathname.startsWith('/art/')))
+          return peerResourceUrl(p.origin,u.pathname+u.search);
+        return u.href;
+      }
     } catch {}
   }
   // Only the server-managed playlist collection uses the /art/playlist route.
@@ -773,7 +800,7 @@ function playlistCoverUrl(p) {
     const rawId=String(p.id || '').startsWith((p.origin || '') + '|')
       ? String(p.id).slice(p.origin.length + 1) : String(p.id || '');
     const origin=p.origin || location.origin;
-    return `${origin}/art/playlist?id=${enc(rawId)}&v=${enc(p.cover_v)}`;
+    return p.origin ? peerResourceUrl(p.origin,`/art/playlist?id=${enc(rawId)}&v=${enc(p.cover_v)}`) : `${origin}/art/playlist?id=${enc(rawId)}&v=${enc(p.cover_v)}`;
   }
   return '';
 }
@@ -999,7 +1026,7 @@ function startQueue(ids, id, label, pl, kind = "") {
   } : null;
   queue = [...ids]; qLabel = label; ctxPl = pl; shufKind = kind; play(id);
 }
-const mediaUrl = (t, path) => (t && t.origin ? t.origin : "") + path;
+const mediaUrl = (t, path) => (t && t.origin ? peerResourceUrl(t.origin,path) : path);
 function play(id) {
   const t = byId[id];
   if (!t) return;
@@ -1321,7 +1348,7 @@ async function addToPlaylist(id,ids){
   for(const tid of ids){
     const t=byId[tid];if(!t)continue;
     let ref=tid;
-    if(t.origin){const r=await postJSON("/api/peer-track-ref",{origin:t.origin,id:t.remote_id || (t.origin && String(t.id).startsWith(t.origin+"|") ? String(t.id).slice(t.origin.length+1) : t.id),title:t.title,artist:primaryArtist(t),album:albumName(t),duration:t.duration,cover_url:t.cover_url || ""});const j=await r.json();if(!r.ok)throw Error(j.error||"Peer unavailable");ref=j.ref;}
+    if(t.origin){const r=await postJSON("/api/peer-track-ref",{origin:registeredPeerOrigin(t.origin),id:t.remote_id || (t.origin && String(t.id).startsWith(t.origin+"|") ? String(t.id).slice(t.origin.length+1) : t.id),title:t.title,artist:primaryArtist(t),album:albumName(t),duration:t.duration,cover_url:t.cover_url || ""});const j=await r.json();if(!r.ok)throw Error(j.error||"Peer unavailable");ref=j.ref;}
     const r=await postJSON(`/api/user/playlists/${enc(id)}/tracks`,{track_id:ref});
     if(!r.ok)throw Error((await r.json()).error||"Could not add track");
   }
@@ -1337,7 +1364,7 @@ async function registerPlaylistTracks(p){
       if(!t)throw Error(`Track ${i+1} is unavailable from the source. No changes saved.`);
       if(!t.origin){refs[i]=id;continue;}
       const remoteId=t.remote_id||(String(t.id).startsWith(t.origin+'|')?String(t.id).slice(t.origin.length+1):t.id);
-      const r=await postJSON('/api/peer-track-ref',{origin:t.origin,id:remoteId,title:t.title,artist:primaryArtist(t),album:albumName(t),duration:t.duration,cover_url:t.cover_url||''});
+      const r=await postJSON('/api/peer-track-ref',{origin:registeredPeerOrigin(t.origin),id:remoteId,title:t.title,artist:primaryArtist(t),album:albumName(t),duration:t.duration,cover_url:t.cover_url||''});
       const j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j.error||`Could not register ${t.title||'peer track'}`);refs[i]=j.ref;
     }
   };

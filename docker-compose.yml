@@ -4,6 +4,7 @@ services:
   riffvault:
     build: .
     image: riffvault:local
+    pull_policy: build
     container_name: riffvault
     restart: unless-stopped
     ports:
@@ -17,6 +18,8 @@ services:
       SCANNER_SECRET: ${SCANNER_SECRET:-}
       MUSIC_SCAN_PATHS: /music
       MUSIC_SCAN_INTERVAL: ${MUSIC_SCAN_INTERVAL:-300}
+      # Optional canonical-origin -> configured Tailscale bridge URL mapping.
+      PEER_RELAY_ALIASES: ${PEER_RELAY_ALIASES:-}
     volumes:
       - riffvault-local-state:/app/.wrangler/state
       - ${MUSIC_FOLDER:-./music}:/music:ro
