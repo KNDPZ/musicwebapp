@@ -103,6 +103,14 @@ function init(env) {
     try { await q("ALTER TABLE user_playlists ADD COLUMN cover_v INTEGER NOT NULL DEFAULT 0").run(); } catch {}
     try { await q("ALTER TABLE user_playlists ADD COLUMN cover_mode TEXT NOT NULL DEFAULT 'copied'").run(); } catch {}
     try { await q("ALTER TABLE peer_track_refs ADD COLUMN cover_url TEXT").run(); } catch {}
+    // Non-destructive metadata cache for peer songs receiving local reactions.
+    // It keeps ranking cards readable when the source peer is temporarily offline.
+    for (const col of [
+      "title TEXT NOT NULL DEFAULT ''", "artist TEXT NOT NULL DEFAULT ''",
+      "album TEXT NOT NULL DEFAULT ''", "duration REAL NOT NULL DEFAULT 0",
+      "cover_url TEXT NOT NULL DEFAULT ''"
+    ]) try { await q(`ALTER TABLE peer_reaction_tracks ADD COLUMN ${col}`).run(); } catch {}
+
     for (const col of ["status TEXT NOT NULL DEFAULT 'active'", "done_at INTEGER", "meta TEXT", "playlist_id TEXT"])
       try { await q(`ALTER TABLE requests ADD COLUMN ${col}`).run(); } catch {}
     for (const col of ["kind TEXT", "members TEXT"])
@@ -1083,6 +1091,7 @@ async function api(req, env, url, ctx) {
       COALESCE(SUM(r.kind = 'heart'),0) AS hearts,
       COALESCE(SUM(r.kind = 'like'),0) AS likes,
       COALESCE(SUM(r.kind = 'dislike'),0) AS dislikes,
+      p.title, p.artist, p.album, p.duration, p.cover_url, p.created_at,
       COALESCE(MAX(r.voter = ? AND r.kind = 'heart'),0) AS my_heart,
       COALESCE(MAX(r.voter = ? AND r.kind = 'like'),0) AS my_like,
       COALESCE(MAX(r.voter = ? AND r.kind = 'dislike'),0) AS my_dislike
@@ -1102,8 +1111,24 @@ async function api(req, env, url, ctx) {
     const id = "peer-" + await sha256(origin + "\n" + remoteId);
     const voter = await sha256(vid);
     const kind = b.kind;
-    const statements = [DB.prepare("INSERT OR IGNORE INTO peer_reaction_tracks(id,origin,remote_id,created_at) VALUES (?,?,?,?)")
-      .bind(id,origin,remoteId,Date.now())];
+    const title = clean(b.title, 200), artist = clean(b.artist, 200);
+    const album = clean(b.album, 200);
+    const duration = Math.max(0, Math.min(86400, Number(b.duration) || 0));
+    let cover = "";
+    try {
+      const candidate = new URL(String(b.cover_url || ""));
+      if (["https:", "http:"].includes(candidate.protocol)) cover = clean(candidate.href, 500);
+    } catch {}
+    const statements = [DB.prepare(`INSERT OR IGNORE INTO peer_reaction_tracks
+      (id,origin,remote_id,created_at,title,artist,album,duration,cover_url)
+      VALUES (?,?,?,?,?,?,?,?,?)`).bind(id,origin,remoteId,Date.now(),title,artist,album,duration,cover),
+      DB.prepare(`UPDATE peer_reaction_tracks SET
+        title=CASE WHEN ? != '' THEN ? ELSE title END,
+        artist=CASE WHEN ? != '' THEN ? ELSE artist END,
+        album=CASE WHEN ? != '' THEN ? ELSE album END,
+        duration=CASE WHEN ? > 0 THEN ? ELSE duration END,
+        cover_url=CASE WHEN ? != '' THEN ? ELSE cover_url END WHERE id=?`)
+        .bind(title,title,artist,artist,album,album,duration,duration,cover,cover,id)];
     if (b.on === true) {
       statements.push(DB.prepare("INSERT OR IGNORE INTO reactions(track_id,voter,kind) VALUES (?,?,?)").bind(id,voter,kind));
       const other = kind === "like" ? "dislike" : kind === "dislike" ? "like" : null;

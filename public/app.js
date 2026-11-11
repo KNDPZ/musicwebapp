@@ -416,7 +416,11 @@ function renderPage() {
   renderSub(tab, sub);
   const el = $("#list");
   if (tab === "request") { if (sub === "new") requestForm(el); else if (sub === "previous") requestPrevious(el, arg.split("/")[1]); else requestQueue(el); return; }
-  if (!tracks.length) { el.innerHTML = loadError ? errorBox("The music library couldn't be loaded.", loadError) : empty("No music yet. Check back soon."); noView(); return; }
+  // Reaction charts may contain locally cached peer songs even if the remote
+  // catalogue is temporarily offline (and this installation has no uploads).
+  if (!tracks.length && !(RX.includes(tab) && sub === "songs" && peerReactionTracks.size)) {
+    el.innerHTML = loadError ? errorBox("The music library couldn't be loaded.", loadError) : empty("No music yet. Check back soon."); noView(); return;
+  }
   if (a === "artist") artistPage(el, dec(arg));
   else if (a === "similar") similarPage(el, dec(arg));
   else if (a === "playlist") playlistPage(el, dec(arg));
@@ -503,11 +507,12 @@ function songList(el) {
 
 // Most listened / hearted / liked / disliked
 function listView(el, tab) {
-  let l = tracks.filter(match), extra;
+  let l = (tab === "top" ? tracks : reactedSongPool()).filter(match), extra;
   if (tab === "top") { l.sort((x, y) => y.plays - x.plays || y.created_at - x.created_at); extra = (t) => plural(t.plays, "play"); }
   else {
-    l = l.filter((t) => t[tab] > 0).sort((x, y) => y[tab] - x[tab] || y.created_at - x.created_at);
-    extra = (t) => plural(t[tab], tab.slice(0, -1));
+    const totals=peerRankingTotals(), score=t=>chartScore(t,tab,totals);
+    l = l.filter((t) => score(t) > 0).sort((x, y) => score(y) - score(x) || y.created_at - x.created_at);
+    extra = (t) => plural(score(t), tab.slice(0, -1));
   }
   l = l.slice(0, LIMIT[tab]);
   view = { ids: l.map((t) => t.id), label: TABS[tab], pl: null };
@@ -1231,12 +1236,61 @@ function renderQueue() {
 
 // Local reaction counts for peer music, never posted to the remote host.
 const peerReactionCounts=new Map();
+// The cache is not a second library. It only holds metadata for peer songs
+// that have received reactions on this WASP instance.
+const peerReactionTracks=new Map();
 const peerReactionKey=t=>`${registeredPeerOrigin(t.origin)}|${t.remote_id||String(t.id).split("|").at(-1)}`;
+function reactionRecordingKey(t) {
+  if(!t || !t.title || !(t.artist || t.artists?.length) || !(Number(t.duration)>0)) return "";
+  if(/\b(live|remix|remaster|acoustic|instrumental|demo|edit)\b/i.test(t.title)) return "";
+  const artist=normalizeRecording(primaryArtist(t)||t.artist), title=normalizeRecording(t.title);
+  return artist && title ? `${artist}|${title}|${Math.round(Number(t.duration)/3)}` : "";
+}
+// Peer votes always reflect THIS server's voters. Remote peers cannot change
+// the local chart, and an identical song on two peers must appear only once.
+function peerRankingTotals() {
+  const byRecording=new Map();
+  for(const [key,c] of peerReactionCounts) {
+    const t=peerReactionTracks.get(key)||peerTrackLookup.get(key);
+    const identity=reactionRecordingKey(t);
+    if (!identity) continue;
+    const totals=byRecording.get(identity)||{hearts:0,likes:0,dislikes:0};
+    for(const field of ["hearts","likes","dislikes"]) totals[field]+=Math.max(0,Number(c[field])||0);
+    byRecording.set(identity,totals);
+  }
+  return byRecording;
+}
+function chartScore(t,field,totals) {
+  const identity=reactionRecordingKey(t);
+  if (identity && totals.has(identity)) return (t.origin?0:Number(t[field])||0)+totals.get(identity)[field];
+  return t.origin?Number(peerReactionCounts.get(peerReactionKey(t))?.[field]||0):Number(t[field]||0);
+}
+function reactedSongPool() {
+  const all=[...tracks],seen=new Set(all.map(t=>reactionRecordingKey(t)).filter(Boolean));
+  const ids=new Set(all.map(t=>t.id));
+  for(const t of peerReactionTracks.values()) {
+    const identity=reactionRecordingKey(t);
+    if (!t.title || ids.has(t.id) || (identity && seen.has(identity))) continue;
+    // Never add a second tile for a duplicate recording; prefer the live song.
+    all.push(t);ids.add(t.id);if(identity)seen.add(identity);
+    if(!byId[t.id]) byId[t.id]=t;
+  }
+  return all;
+}
 async function loadPeerReactionCounts(){
  try{const r=await fetch("/api/peer-reactions",{headers:{"X-Visitor":vid}});if(!r.ok)return;
  for(const x of await r.json()){const key=`${x.origin}|${x.remote_id}`;
   peerReactionCounts.set(key,x);
-  if(x.my_heart||x.my_like||x.my_dislike) mine[key]={heart:!!x.my_heart,like:!!x.my_like,dislike:!!x.my_dislike};
+  if(x.title){
+   const track={id:key,remote_id:x.remote_id,origin:x.origin,title:x.title,
+    artist:x.artist||"Unknown Artist",artists:[x.artist||"Unknown Artist"],
+    album:x.album||"",duration:Number(x.duration)||0,cover_url:x.cover_url||"",
+    created_at:Number(x.created_at)||0,cached_peer:true};
+   peerReactionTracks.set(key,track);
+  }
+  // Always refresh the local visitor's state; previously unvoted songs may
+  // have been voted on another device, or the vote may have been removed.
+  mine[key]={heart:!!x.my_heart,like:!!x.my_like,dislike:!!x.my_dislike};
  }
  store.set("mine",mine);
  }catch{}
@@ -1269,6 +1323,21 @@ async function refreshCurrentReaction() {
   } catch { /* keep the last known counts if temporarily offline */ }
 }
 setInterval(refreshCurrentReaction,10000);
+setInterval(async()=>{
+  if(document.hidden || !RX.includes(parse().a) || reactionMutationCount) return;
+  try {
+    await loadPeerReactionCounts();
+    const r=await fetch("/api/tracks",{cache:"no-store"});
+    if(r.ok){
+      const updates=new Map((await r.json()).map(t=>[t.id,t]));
+      for(const t of tracks)if(!t.origin && updates.has(t.id)){
+        const latest=updates.get(t.id);
+        for(const field of ["hearts","likes","dislikes"])t[field]=Number(latest[field])||0;
+      }
+    }
+    if(RX.includes(parse().a))render();
+  }catch{}
+},15000);
 document.addEventListener("visibilitychange",()=>{if(!document.hidden)refreshCurrentReaction();});
 // ---------- reactions ----------
 function paintReact() {
@@ -1301,14 +1370,25 @@ async function react(kind) {
   store.set("mine",mine);paintReact();
   try {
     const endpoint=remote?"/api/peer-react":"/api/react/"+t.id;
-    const body=remote?{kind,on,origin:registeredPeerOrigin(t.origin),remote_id:t.remote_id||String(t.id).split("|").at(-1)}:{kind,on};
+    const body=remote?{kind,on,origin:registeredPeerOrigin(t.origin),
+      remote_id:t.remote_id||String(t.id).split("|").at(-1),
+      title:t.title,artist:primaryArtist(t)||t.artist||"",album:albumName(t)||"",
+      duration:Number(t.duration)||0,
+      cover_url:t.cover_url||""}:{kind,on};
     const r=await fetch(endpoint,{method:"POST",headers:{"content-type":"application/json","X-Visitor":vid},body:JSON.stringify(body)});
     if(!r.ok)throw Error("Reaction wasn't saved");
     const saved=await r.json();
-    if(remote){peerReactionCounts.set(key,saved);}else Object.assign(t,saved);
+    if(remote){
+      peerReactionCounts.set(key,saved);
+      peerReactionTracks.set(key,{...t,id:key,origin:registeredPeerOrigin(t.origin),
+        remote_id:t.remote_id||String(t.id).split("|").at(-1),
+        artist:primaryArtist(t)||t.artist||"",artists:artistsOf(t)});
+    }else Object.assign(t,saved);
   }catch{mine[key]=prior;if(remote)peerReactionCounts.set(key,priorCounts);else Object.assign(t,priorCounts);store.set("mine",mine);popup("Couldn't save reaction","Please try again.");}
   finally {reactionMutationCount=Math.max(0,reactionMutationCount-1);}
   paintReact();
+  // Update the Most hearted/liked/disliked chart without requiring navigation.
+  if (RX.includes(parse().a)) render();
 }
 $("#bh").addEventListener("click", () => react("heart"));
 $("#bl").addEventListener("click", () => react("like"));
