@@ -34,6 +34,7 @@
       <a class="nav-item" href="/">View site</a>
       <button class="nav-item" id="logout" type="button" style="width:100%;background:none;border:0;font:inherit;font-weight:600;cursor:pointer;text-align:left">Log out</button>
     </div>
+    <div class="admin-build" id="adminBuild" role="status">WASP · Checking version…</div>
   </aside>
 
   <div class="main">
@@ -187,6 +188,11 @@
     <!-- Network (peer-to-peer) -->
     <section class="pane hidden" id="s-network">
       <h1>Network</h1>
+      <div class="tabs sub" role="tablist" aria-label="Network administration">
+        <button class="tab" id="netTabPeers" type="button" role="tab" aria-selected="true" aria-controls="netPeersPanel">Connected peers</button>
+        <button class="tab" id="netTabCrons" type="button" role="tab" aria-selected="false" aria-controls="netCronsPanel">Crons</button>
+      </div>
+      <div id="netPeersPanel" role="tabpanel" aria-labelledby="netTabPeers">
       <div class="card">
         <h2>Share this library</h2>
         <p class="muted" style="margin-top:0">When sharing is on, other music-app instances can add your link and stream songs from this library. Your files stay on this server; peers only read the catalogue and stream audio.</p>
@@ -217,6 +223,23 @@
         </div>
         <div id="netPeers" class="muted">No peers yet.</div>
         <p class="msg" id="netMsg" role="status"></p>
+      </div>
+      </div>
+      <div id="netCronsPanel" class="hidden" role="tabpanel" aria-labelledby="netTabCrons">
+        <div class="card">
+          <h2>Scheduled maintenance</h2>
+          <p class="muted">Enable jobs only when needed. Each schedule runs on this WASP server, using its saved timezone. Jobs update cached information and do not remove music or playlists.</p>
+          <form id="cronForm" autocomplete="off">
+            <label for="cronTimezone">Timezone</label>
+            <select id="cronTimezone" name="timezone" required></select>
+            <div id="cronJobs"></div>
+            <div class="form" style="margin-top:16px">
+              <button class="btn" type="submit" id="cronSave">Save schedules</button>
+            </div>
+            <p class="msg" id="cronMsg" role="status" aria-live="polite"></p>
+          </form>
+          <p class="muted">Daily jobs use a 24-hour time. Weekly jobs run on the chosen weekday at 00:00; monthly jobs run on days 1–30 at 00:00. Months without the selected day skip that month. Enabled jobs are checked every minute, with one execution per scheduled minute.</p>
+        </div>
       </div>
     </section>
 

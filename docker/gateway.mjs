@@ -39,14 +39,19 @@ async function scan(){
  if(scanning)return;scanning=true;
  try{
   const found=new Map();for(const root of roots)await walk(root,found);
+  // Only send added/modified files. Re-indexing every unchanged music file
+  // every five minutes caused unnecessary D1 writes and catalogue reloads.
+  const changed=[...found.values()].filter(t=>{
+    const old=catalogue.get(t.id);
+    return !old || old.mtime!==t.mtime || old.size!==t.size;
+  });
   for(const id of catalogue.keys())if(!found.has(id))covers.delete(id);
   catalogue.clear();for(const [id,t] of found)catalogue.set(id,t);
-  const all=[...catalogue.values()];
-  for(let i=0;i<all.length;i+=250){
-   const response=await fetch(worker+'/api/internal/folder-index',{method:'POST',headers:{'content-type':'application/json','x-scanner-secret':secret},body:JSON.stringify({tracks:all.slice(i,i+250)})});
+  for(let i=0;i<changed.length;i+=250){
+   const response=await fetch(worker+'/api/internal/folder-index',{method:'POST',headers:{'content-type':'application/json','x-scanner-secret':secret},body:JSON.stringify({tracks:changed.slice(i,i+250)})});
    if(!response.ok)throw Error('Index update failed: '+response.status+' '+await response.text());
   }
-  console.log('Indexed',all.length,'server-folder songs');
+  console.log('Scanned',catalogue.size,'server-folder songs; changed',changed.length);
  }catch(e){console.error('Scanner error',e);}finally{scanning=false;}
 }
 function streamFile(req,res,t){

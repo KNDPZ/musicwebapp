@@ -27,6 +27,7 @@ function showPane() {
   document.querySelectorAll(".pane").forEach((p) => p.classList.toggle("hidden", p.id !== "s-" + k));
   if (k === "users") loadUsers();
   if (k === "requests") showRequestTab(route === "requests/spotify");
+  if (k === "network") showNetworkTab(route === "network/crons");
   window.scrollTo(0, 0);
 }
 window.addEventListener("hashchange", showPane);
@@ -46,7 +47,12 @@ async function show() {
   const { admin } = await (await fetch("/api/me")).json();
   $("#login").classList.toggle("hidden", admin);
   $("#panel").classList.toggle("hidden", !admin);
-  if (admin) { showPane(); refresh(); loadPlaylists(); loadRequests(); loadSite(); loadNetwork(); syncMode(); }
+  if (admin) {
+    showPane(); refresh(); loadPlaylists(); loadRequests(); loadSite(); loadNetwork(); syncMode();
+    fetch("/api/admin/version",{cache:"no-store"}).then(r=>r.json()).then(v=>{
+      $("#adminBuild").textContent=`WASP v${v.version||"?"} · ${v.label||""}`;
+    }).catch(()=>{$("#adminBuild").textContent="WASP · Version unavailable";});
+  }
 }
 function syncMode() {
   $("#plField").classList.toggle("hidden", mode() !== "playlist");
@@ -703,6 +709,90 @@ $("#cleanForm").addEventListener("submit", async (e) => {
     flashMsg("#cleanMsg", `Done. ${j.removed} stored files deleted and the library is empty.`);
     page = 1; refresh(); loadPlaylists(); loadRequests();
   } else { $("#cMsg").textContent = j.error || "Something went wrong."; cCheck(); }
+});
+
+// ---------- Network → Crons ----------
+const CRON_LABELS={peers:"Check connected peers for new tracks",artwork:"Fetch missing artist/album artwork",biography:"Check artist biographies and lineups"};
+const CRON_KEYS=Object.keys(CRON_LABELS);
+const cronWeekdays=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+const availableZones=()=>{
+  let zones=[];
+  try{zones=Intl.supportedValuesOf("timeZone");}catch{}
+  return [...new Set(["Asia/Manila","UTC",...zones])].sort();
+};
+let cronsLoaded=false;
+function showNetworkTab(crons){
+  $("#netTabPeers").setAttribute("aria-selected",String(!crons));
+  $("#netTabCrons").setAttribute("aria-selected",String(crons));
+  $("#netPeersPanel").classList.toggle("hidden",crons);
+  $("#netCronsPanel").classList.toggle("hidden",!crons);
+  if(crons&&!cronsLoaded)loadCrons();
+}
+$("#netTabPeers").onclick=()=>{location.hash="network";showNetworkTab(false);};
+$("#netTabCrons").onclick=()=>{location.hash="network/crons";showNetworkTab(true);};
+function cronJobTemplate(key){
+  const id="cron-"+key;
+  return `<fieldset class="cron-job" id="${id}" style="border:1px solid var(--line2);border-radius:12px;margin:16px 0;padding:14px">
+    <legend><label><input type="checkbox" data-cron="${key}" data-field="enabled"> ${CRON_LABELS[key]}</label></legend>
+    <div class="cron-fields">
+      <label>Repeat
+        <select data-cron="${key}" data-field="frequency"><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select>
+      </label>
+      <label data-schedule="daily">Time (24-hour)
+        <input type="time" data-cron="${key}" data-field="time" value="02:00" step="60">
+      </label>
+      <label data-schedule="weekly" class="hidden">Day of week
+        <select data-cron="${key}" data-field="weekday">${cronWeekdays.map((day,i)=>`<option value="${i}">${day}</option>`).join("")}</select>
+      </label>
+      <label data-schedule="monthly" class="hidden">Day of month
+        <select data-cron="${key}" data-field="monthday">${Array.from({length:30},(_,i)=>`<option value="${i+1}">${i+1}</option>`).join("")}</select>
+      </label>
+    </div>
+  </fieldset>`;
+}
+$("#cronJobs").innerHTML=CRON_KEYS.map(cronJobTemplate).join("");
+const cronField=(key,field)=>document.querySelector(`[data-cron="${key}"][data-field="${field}"]`);
+function syncCronFields(key){
+  const group=$("#cron-"+key),enabled=cronField(key,"enabled").checked,frequency=cronField(key,"frequency").value;
+  group.querySelectorAll("[data-schedule]").forEach(el=>el.classList.toggle("hidden",el.dataset.schedule!==frequency));
+  group.querySelector(".cron-fields").classList.toggle("cron-disabled",!enabled);
+}
+$("#cronJobs").addEventListener("change",e=>{
+  const key=e.target.dataset.cron;if(key)syncCronFields(key);
+});
+async function loadCrons(){
+  try{
+    const res=await fetch("/api/admin/crons",{cache:"no-store"});
+    if(!res.ok)throw Error("Unable to load schedules");
+    const config=await res.json(),tz=$("#cronTimezone");
+    const zones=availableZones();
+    if(config.timezone&&!zones.includes(config.timezone))zones.unshift(config.timezone);
+    tz.innerHTML=zones.map(z=>`<option value="${esc(z)}">${esc(z)}</option>`).join("");
+    tz.value=config.timezone||"UTC";
+    for(const key of CRON_KEYS){
+      const job=config.jobs?.[key]||{};
+      for(const field of ["enabled","frequency","time","weekday","monthday"]){
+        const input=cronField(key,field);if(job[field]!==undefined){
+          if(field==="enabled")input.checked=!!job[field];else input.value=String(job[field]);
+        }
+      }
+      syncCronFields(key);
+    }
+    cronsLoaded=true;
+  }catch(e){$("#cronMsg").textContent=e.message||"Unable to load schedules";}
+}
+$("#cronForm").addEventListener("submit",async e=>{
+  e.preventDefault();const btn=$("#cronSave");btn.disabled=true;
+  const config={timezone:$("#cronTimezone").value,jobs:{}};
+  for(const key of CRON_KEYS){
+    config.jobs[key]={enabled:cronField(key,"enabled").checked,
+      frequency:cronField(key,"frequency").value,time:cronField(key,"time").value,
+      weekday:Number(cronField(key,"weekday").value),monthday:Number(cronField(key,"monthday").value)};
+  }
+  try{const res=await post("/api/admin/crons",config,"PUT");const result=await res.json();
+    if(!res.ok)throw Error(result.error||"Unable to save schedules");
+    flashMsg("#cronMsg","Schedules saved successfully.");
+  }catch(e){flashMsg("#cronMsg",e.message,true);}finally{btn.disabled=false;}
 });
 
 // ---------- network (peer-to-peer) ----------

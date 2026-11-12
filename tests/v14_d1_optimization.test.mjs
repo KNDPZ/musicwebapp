@@ -37,7 +37,7 @@ const call=async (w,path,method='GET',body,headers={}) => {
 let first=await call(worker,'/api/tracks');
 assert.equal(first.res.status,200,JSON.stringify(first.json));
 assert.equal(first.json.length,3);
-assert.equal(sql.prepare("SELECT value FROM settings WHERE key='wasp_schema_version'").get().value,'14');
+assert.equal(sql.prepare("SELECT value FROM settings WHERE key='wasp_schema_version'").get().value,'14.2');
 assert.equal(sql.prepare('SELECT count(*) AS n FROM track_artist_map').get().n,4,'multi-artist backfill preserves all contributors');
 assert.equal(sql.prepare('SELECT artist FROM tracks WHERE id=?').get('t-ac').artist,'AC/DC','migration never rewrites tracks');
 const indexPlan=sql.prepare("EXPLAIN QUERY PLAN SELECT 1 FROM track_artist_map WHERE artist_key='ac dc' LIMIT 1").all();
@@ -82,7 +82,7 @@ assert.ok(readHits>=1);
 assert.equal(statements.length,0,'cache hit must bypass all D1 work, including network sharing');
 const privateRes=await call(worker3,'/api/me');
 assert.notEqual(privateRes.res.headers.get('x-wasp-cache'),'HIT');
-assert.ok(!records.has('https://wasp.test/api/me?__wasp_cache=wasp-v14-1'));
+assert.ok(!records.has('https://wasp.test/api/me?__wasp_cache=wasp-v14-2&v='));
 // Real administrative writes must invalidate corresponding public responses.
 const token='testv14';
 const hash=[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(token)))].map(v=>v.toString(16).padStart(2,'0')).join('');
@@ -93,7 +93,7 @@ assert.equal(changed.res.status,200,JSON.stringify(changed.json));await Promise.
 const after=await call(worker3,'/api/site');
 assert.equal(after.json.name,'WASP v14 Test','updated site name must bypass stale public cache');
 assert.equal(after.res.headers.get('x-wasp-cache'),'MISS');
-assert.ok(records.has('https://wasp.test/api/tracks?__wasp_cache=wasp-v14-1'));
+assert.ok(records.has('https://wasp.test/api/tracks?__wasp_cache=wasp-v14-2&v='));
 // New reactions summary, which avoids fetching the entire tracks catalogue.
 sql.prepare('INSERT INTO reactions(track_id,voter,kind) VALUES (?,?,?)').run('t-ac','someone','like');
 const totals=await call(worker3,'/api/track-reaction-counts');
@@ -107,7 +107,7 @@ const edit=await call(worker3,'/api/admin/tracks/t-feat','PATCH',{
 assert.equal(edit.res.status,200,JSON.stringify(edit.json));await Promise.all(waitFor.splice(0));
 assert.deepEqual(sql.prepare('SELECT artist_key FROM track_artist_map WHERE track_id=? ORDER BY artist_key').all('t-feat').map(r=>r.artist_key),['delta','gamma']);
 assert.equal(sql.prepare("SELECT COUNT(*) AS n FROM track_artist_map WHERE artist_key='alpha'").get().n,0);
-assert.equal(records.has('https://wasp.test/api/tracks?__wasp_cache=wasp-v14-1'),false,'admin track edit invalidates cached public catalogue');
+assert.equal(records.has('https://wasp.test/api/tracks?__wasp_cache=wasp-v14-2&v='),false,'admin track edit invalidates cached public catalogue');
 const removing=await call(worker3,'/api/admin/tracks/t-feat','DELETE',null,{cookie:'sid='+token});
 assert.equal(removing.res.status,200,JSON.stringify(removing.json));
 assert.equal(sql.prepare("SELECT COUNT(*) AS n FROM track_artist_map WHERE artist_key='gamma'").get().n,0);

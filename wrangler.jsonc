@@ -4,6 +4,7 @@
   "name": "musicwebapp",
   "main": "src/index.js",
   "compatibility_date": "2025-10-01",
+  "triggers": { "crons": ["* * * * *"] },
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",

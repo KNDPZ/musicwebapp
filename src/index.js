@@ -2,6 +2,8 @@
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
+const BUILD_VERSION = "14.0.2";
+const BUILD_LABEL = "Library Refresh & Peer Listening";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -36,17 +38,18 @@ const clean = (v, max = 200) => String(v ?? "").trim().slice(0, max);
 // Cache API entries are regional and expire automatically. Login, account,
 // private playlist, lyric requests, and admin responses are NEVER cached here.
 const PUBLIC_CACHE_TTLS = Object.freeze({
-  "/api/tracks": 90,
-  "/api/playlists": 120,
-  "/api/user-playlists": 60,
+  "/api/tracks": 45,
+  "/api/playlists": 45,
+  "/api/user-playlists": 45,
   "/api/site": 120,
   "/api/entity-reactions": 5,
   "/api/track-reaction-counts": 5,
 });
-const CACHE_REV = "wasp-v14-1";
-const cacheFor = (req, url) => req.method === "GET" && !url.search && PUBLIC_CACHE_TTLS[url.pathname]
+const CACHE_REV = "wasp-v14-2";
+const publicRevision = url => /^[a-f0-9-]{1,40}$/i.test(url.searchParams.get("v") || "") ? url.searchParams.get("v") : "";
+const cacheFor = (req, url) => req.method === "GET" && (!url.search || (url.searchParams.size===1 && !!publicRevision(url))) && PUBLIC_CACHE_TTLS[url.pathname]
   ? (typeof caches !== "undefined" && caches.default ? caches.default : null) : null;
-const cachedKey = url => new Request(`${url.origin}${url.pathname}?__wasp_cache=${CACHE_REV}`);
+const cachedKey = url => new Request(`${url.origin}${url.pathname}?__wasp_cache=${CACHE_REV}&v=${publicRevision(url)}`);
 async function cachedPublicResponse(req, url) {
   const cache=cacheFor(req,url);
   if (!cache) return null;
@@ -113,13 +116,16 @@ function init(env) {
     const q = (s) => env.DB.prepare(s);
     // v14: migration work is one-time. A new Worker isolate checks one indexed
     // settings row instead of trying dozens of CREATE/ALTER statements.
-    try {
-      const marker=await q("SELECT value FROM settings WHERE key = 'wasp_schema_version'").first();
-      if(marker?.value === "14") return;
-    } catch {
-      // New installation with no settings table yet. The next statement is
-      // idempotent; all remaining migration work is done by one lease holder.
-      await q("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL)").run();
+    let marker;
+    try {marker=await q("SELECT value FROM settings WHERE key = 'wasp_schema_version'").first();}
+    catch {await q("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL)").run();}
+    if(marker?.value === "14.2")return;
+    if(marker?.value === "14"){
+      // Strictly additive upgrade: preserve all v14 tables and artist mappings.
+      await q("CREATE TABLE IF NOT EXISTS peer_listens(origin TEXT NOT NULL,remote_id TEXT NOT NULL,plays INTEGER NOT NULL DEFAULT 0,synced_plays INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(origin,remote_id))").run();
+      await q("CREATE INDEX IF NOT EXISTS idx_tracks_created ON tracks(created_at DESC)").run();
+      await q("UPDATE settings SET value='14.2' WHERE key='wasp_schema_version' AND value='14'").run();
+      return;
     }
     // Multiple Cloudflare isolates may start together across data centers.
     // A D1-backed lease prevents simultaneous backfills and repeated index
@@ -135,7 +141,7 @@ function init(env) {
         for(let attempt=0;attempt<20;attempt++) {
           await new Promise(resolve=>setTimeout(resolve,500));
           const marker=await q("SELECT value FROM settings WHERE key = 'wasp_schema_version'").first();
-          if(marker?.value === "14") return;
+          if(marker?.value === "14.2") return;
         }
         throw new Error("A WASP database migration is still running. Please retry shortly.");
       }
@@ -144,7 +150,7 @@ function init(env) {
     // Another isolate may have completed the migration after our first check
     // but before this isolate acquired the released lease.
     const afterLease=await q("SELECT value FROM settings WHERE key = 'wasp_schema_version'").first();
-    if(afterLease?.value === "14") return;
+    if(afterLease?.value === "14.2") return;
     // Run each statement on its own. D1 batch() is atomic: one failure rolls the whole
     // batch back, so a hiccup on a new table/index during an upgrade used to take the
     // entire site down. Individual try/catch keeps the site up even if one step fails.
@@ -156,6 +162,7 @@ function init(env) {
       "CREATE TABLE IF NOT EXISTS user_playlist_tracks (playlist_id TEXT NOT NULL, track_id TEXT NOT NULL, added_at INTEGER NOT NULL, PRIMARY KEY (playlist_id, track_id))",
       "CREATE TABLE IF NOT EXISTS playlist_hearts (playlist_id TEXT NOT NULL, voter TEXT NOT NULL, PRIMARY KEY (playlist_id, voter))",
       "CREATE TABLE IF NOT EXISTS peer_track_refs (ref TEXT PRIMARY KEY, origin TEXT NOT NULL, remote_id TEXT NOT NULL, title TEXT, artist TEXT, album TEXT, duration REAL)",
+      "CREATE TABLE IF NOT EXISTS peer_listens (origin TEXT NOT NULL, remote_id TEXT NOT NULL, plays INTEGER NOT NULL DEFAULT 0, synced_plays INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(origin,remote_id))",
       "CREATE TABLE IF NOT EXISTS attempts (ip TEXT NOT NULL, ts INTEGER NOT NULL)",
       `CREATE TABLE IF NOT EXISTS tracks (
         id TEXT PRIMARY KEY, title TEXT NOT NULL, artist TEXT NOT NULL, album TEXT NOT NULL,
@@ -227,12 +234,13 @@ function init(env) {
     await q("CREATE TABLE IF NOT EXISTS track_artist_map (track_id TEXT NOT NULL, artist_key TEXT NOT NULL, album TEXT NOT NULL DEFAULT '', PRIMARY KEY(track_id, artist_key))").run();
     await q("CREATE INDEX IF NOT EXISTS idx_track_artist_lookup ON track_artist_map(artist_key, album)").run();
     await q("CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks(album)").run();
+    await q("CREATE INDEX IF NOT EXISTS idx_tracks_created ON tracks(created_at DESC)").run();
     await q("CREATE INDEX IF NOT EXISTS idx_playlist_tracks_playlist_added ON playlist_tracks(playlist_id,added_at)").run();
     await q("CREATE INDEX IF NOT EXISTS idx_user_playlist_tracks_playlist_added ON user_playlist_tracks(playlist_id,added_at)").run();
-    await rebuildArtistMap(env.DB);
+    if(afterLease?.value !== "14") await rebuildArtistMap(env.DB);
     // Only set the marker after all essential work succeeds; partial migrations
     // safely retry on the next cold start rather than hiding a missing index.
-    await q("INSERT INTO settings(key,value) VALUES('wasp_schema_version','14') ON CONFLICT(key) DO UPDATE SET value=excluded.value").run();
+    await q("INSERT INTO settings(key,value) VALUES('wasp_schema_version','14.2') ON CONFLICT(key) DO UPDATE SET value=excluded.value").run();
     } finally {
       if(claimed) await q("DELETE FROM settings WHERE key='wasp_v14_migration_lease' AND value=?").bind(lease).run().catch(()=>{});
     }
@@ -981,6 +989,115 @@ async function serveLyrics(env, url) {
 const TRACK_COLS = `t.id, t.title, t.artist, t.artists, t.album, t.track_no, t.duration, t.plays, t.created_at,
   COALESCE(SUM(r.kind = 'heart'), 0) AS hearts, COALESCE(SUM(r.kind = 'like'), 0) AS likes, COALESCE(SUM(r.kind = 'dislike'), 0) AS dislikes`;
 
+async function touchCatalogue(DB) {
+  // A single indexed row makes new uploads and playlists discoverable across
+  // Cloudflare POPs without relying on a local cache purge in one data center.
+  await DB.prepare("INSERT INTO settings(key,value) VALUES('catalog_revision',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+    .bind(crypto.randomUUID()).run();
+}
+function changesCatalogue(path) {
+  return path === "/api/internal/folder-index" || path === "/api/admin/upload" ||
+    path === "/api/admin/clean" || path.startsWith("/api/admin/tracks/") ||
+    path.startsWith("/api/admin/playlists") || path.startsWith("/api/admin/requests/") ||
+    path.startsWith("/api/user/playlists");
+}
+async function catalogueVersion(DB) {
+  const row=await DB.prepare("SELECT value FROM settings WHERE key='catalog_revision'").first();
+  return row?.value || "0";
+}
+
+const CRON_TYPES = ["peers","artwork","biography"];
+const CRON_DEFAULT_JOB = {enabled:false,frequency:"daily",time:"02:00",weekday:0,monthday:1};
+function cronConfigDefault() {
+  return {timezone:"Asia/Manila",jobs:Object.fromEntries(CRON_TYPES.map(x=>[x,{...CRON_DEFAULT_JOB}]))};
+}
+function validateCronConfig(value) {
+  if(!value || typeof value!=="object" || typeof value.timezone!=="string" || value.timezone.length>80)throw Error("Invalid timezone");
+  try {new Intl.DateTimeFormat("en-US",{timeZone:value.timezone}).format(new Date());}catch{throw Error("Timezone is not supported");}
+  const cfg={timezone:value.timezone,jobs:{}};
+  for(const kind of CRON_TYPES){
+    const source=value.jobs?.[kind]||{},frequency=source.frequency||"daily";
+    if(!["daily","weekly","monthly"].includes(frequency))throw Error("Invalid frequency for "+kind);
+    const time=String(source.time||"00:00"),weekday=Number(source.weekday??0),monthday=Number(source.monthday??1);
+    if(!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(time)||!Number.isInteger(weekday)||weekday<0||weekday>6||!Number.isInteger(monthday)||monthday<1||monthday>30)throw Error("Invalid schedule for "+kind);
+    cfg.jobs[kind]={enabled:source.enabled===true,frequency,time,weekday,monthday};
+  }
+  return cfg;
+}
+async function getCronConfig(DB){
+  const row=await DB.prepare("SELECT value FROM settings WHERE key='cron_config'").first();
+  if(!row)return cronConfigDefault();
+  try{return validateCronConfig(JSON.parse(row.value));}catch{return cronConfigDefault();}
+}
+function cronLocalDate(date,timezone) {
+  const parts=new Intl.DateTimeFormat("en-US",{timeZone:timezone,year:"numeric",month:"2-digit",day:"2-digit",weekday:"short",hour:"2-digit",minute:"2-digit",hourCycle:"h23"}).formatToParts(date);
+  const p=Object.fromEntries(parts.map(x=>[x.type,x.value]));
+  return {year:p.year,month:p.month,day:Number(p.day),weekday:["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].indexOf(p.weekday),hm:p.hour+":"+p.minute};
+}
+function shouldRunCron(job,local){
+  if(!job?.enabled)return false;
+  if(job.frequency==="daily")return job.time===local.hm;
+  if(local.hm!=="00:00")return false;
+  return job.frequency==="weekly"?job.weekday===local.weekday:job.monthday===local.day;
+}
+async function warmArtistMetadata(env,row,kind){
+  const artists=artistsOfRow(row).slice(0,2);
+  for(const name of artists){
+    if(!name||/^unknown/i.test(name))continue;
+    if(kind==="biography"){
+      // Existing refresh machinery avoids repeating an unchanged Wikipedia lookup.
+      try{await serveBio(env,new URL("https://wasp.invalid/api/bio?name="+encodeURIComponent(name)),null);}catch{}
+    }else{
+      try{await serveArt(env,new URL("https://wasp.invalid/art/artist?name="+encodeURIComponent(name)));}catch{}
+      if(row.album)try{await serveArt(env,new URL("https://wasp.invalid/art/album?artist="+encodeURIComponent(name)+"&album="+encodeURIComponent(row.album)));}catch{}
+    }
+  }
+}
+async function runCronJob(env,kind){
+  if(kind==="peers"){
+    const rows=(await env.DB.prepare("SELECT id,url,track_count FROM peers ORDER BY added_at LIMIT 60").all()).results;
+    let updated=0;
+    for(const row of rows){
+      try{
+        const res=await fetch(row.url+"/api/peer",{signal:AbortSignal.timeout(6000),headers:{accept:"application/json"}});
+        if(!res.ok)continue;
+        const json=await res.json();if(!json.ok)continue;
+        const count=Number(json.tracks)||0;
+        if(count!==Number(row.track_count))updated++;
+        await env.DB.prepare("UPDATE peers SET track_count=?,name=?,last_ok=?,last_error=NULL WHERE id=?")
+          .bind(count,clean(json.name)||row.url,Date.now(),row.id).run();
+      }catch{/* Peer remains in registry; transient network errors never delete it. */}
+    }
+    return {checked:rows.length,updated};
+  }
+  const cursorKey="cron_cursor_"+kind;
+  const marker=await env.DB.prepare("SELECT value FROM settings WHERE key=?").bind(cursorKey).first();
+  const cursor=Number(marker?.value)||Number.MAX_SAFE_INTEGER;
+  // Bounded indexed scan, never full catalogue scan per scheduled event.
+  let rows=(await env.DB.prepare("SELECT id,artist,artists,album,created_at FROM tracks WHERE created_at < ? ORDER BY created_at DESC LIMIT 8").bind(cursor).all()).results;
+  if(!rows.length)rows=(await env.DB.prepare("SELECT id,artist,artists,album,created_at FROM tracks ORDER BY created_at DESC LIMIT 8").all()).results;
+  for(const row of rows)await warmArtistMetadata(env,row,kind);
+  const next=rows.length?Math.min(...rows.map(x=>Number(x.created_at)||0)):Number.MAX_SAFE_INTEGER;
+  await env.DB.prepare("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(cursorKey,String(next)).run();
+  return {checked:rows.length};
+}
+async function runDueCronJobs(env,when=Date.now()) {
+  const config=await getCronConfig(env.DB);
+  if(!CRON_TYPES.some(k=>config.jobs[k]?.enabled))return [];
+  const local=cronLocalDate(new Date(when),config.timezone),results=[];
+  for(const kind of CRON_TYPES){
+    if(!shouldRunCron(config.jobs[kind],local))continue;
+    const runKey=local.year+"-"+local.month+"-"+String(local.day).padStart(2,"0")+"-"+local.hm;
+    const key="cron_last_"+kind;
+    await env.DB.prepare("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)").bind(key,"").run();
+    const r=await env.DB.prepare("UPDATE settings SET value=? WHERE key=? AND value<>?").bind(runKey,key,runKey).run();
+    if(Number(r.meta?.changes??r.changes??0)===0)continue;
+    try{results.push({kind,...await runCronJob(env,kind)});}
+    catch(e){console.warn("WASP cron job error:",kind,e.message);results.push({kind,error:"Job failed; see logs"});}
+  }
+  return results;
+}
+
 async function api(req, env, url, ctx) {
   const path = url.pathname;
   const m = req.method;
@@ -988,6 +1105,43 @@ async function api(req, env, url, ctx) {
   let x;
 
   // ---------- public ----------
+  if(path==="/api/catalog-version" && m==="GET") {
+    return json({revision:await catalogueVersion(DB)},200,{"cache-control":"no-store"});
+  }
+  if(path==="/api/peer-plays" && m==="GET") {
+    if(!(await isSharing(DB)))return json({error:"Library is not shared"},403);
+    const rows=(await DB.prepare("SELECT origin,remote_id,(plays-synced_plays) AS plays FROM peer_listens WHERE plays>synced_plays ORDER BY plays DESC LIMIT 3000").all()).results;
+    return json(rows,200,{"cache-control":"no-store"});
+  }
+  if(path==="/api/play-peer" && m==="POST") {
+    const b=await req.json().catch(()=>({}));
+    const origin=clean(b.origin,300).replace(/\/$/,""),remote=clean(b.remote_id,100);
+    if(!origin||!/^[\w-]{1,100}$/.test(remote) || !(await DB.prepare("SELECT 1 FROM peers WHERE url=?").bind(origin).first()))
+      return json({error:"Unknown peer track"},400);
+    let canonical=origin;
+    try {
+      const aliases=JSON.parse(env.PEER_ORIGIN_ALIASES||"{}");
+      for(const [publicOrigin,bridgeOrigin] of Object.entries(aliases)){
+        if(new URL(bridgeOrigin).origin===origin && new URL(publicOrigin).protocol==="https:")canonical=new URL(publicOrigin).origin;
+      }
+    }catch{}
+    await DB.prepare("INSERT INTO peer_listens(origin,remote_id,plays) VALUES(?,?,1) ON CONFLICT(origin,remote_id) DO UPDATE SET plays=plays+1").bind(canonical,remote).run();
+    // Docker can send genuine listening events directly to its configured
+    // source peer via Bridge. The source already exposes an anonymous /api/play
+    // counter; this is what lets main Cloudflare charts reflect Docker listens.
+    // Mark a local listen as synced only after the source acknowledges it, so
+    // federation sums never count the same listen twice.
+    if(env.PEER_PLAY_SYNC==="1" && ctx?.waitUntil){
+      ctx.waitUntil((async()=>{
+        try{
+          const response=await fetch(origin+"/api/play/"+encodeURIComponent(remote),{
+            method:"POST",signal:AbortSignal.timeout(6000)});
+          if(response.ok)await DB.prepare("UPDATE peer_listens SET synced_plays=synced_plays+1 WHERE origin=? AND remote_id=? AND synced_plays<plays").bind(canonical,remote).run();
+        }catch{/* Remains locally counted if the peer cannot be reached. */}
+      })());
+    }
+    return json({ok:true});
+  }
   // Peer discovery: other instances probe this to confirm sharing is on and get a friendly name.
   if (path === "/api/peer" && m === "GET") {
     if (!(await isSharing(DB))) return json({ error: "This library is not shared on the network." }, 403);
@@ -1006,6 +1160,10 @@ async function api(req, env, url, ctx) {
     })));
   }
   // Local-only scanner authentication. This secret is never configured on the production Worker.
+  if(path==="/api/internal/cron-tick" && m==="POST") {
+    if(!env.SCANNER_SECRET || req.headers.get("x-scanner-secret")!==env.SCANNER_SECRET)return json({error:"Forbidden"},403);
+    return json({ok:true,runs:await runDueCronJobs(env)},200,{"cache-control":"no-store"});
+  }
   if (path === "/api/internal/folder-index" && m === "POST") {
     if (!env.SCANNER_SECRET || req.headers.get("x-scanner-secret") !== env.SCANNER_SECRET) return json({error:"Forbidden"},403);
     const body = await req.json().catch(() => ({}));
@@ -1338,7 +1496,8 @@ async function api(req, env, url, ctx) {
     return json({ ...counts, origin, remote_id:remoteId });
   }
   if ((x = path.match(/^\/api\/play\/([\w-]+)$/)) && m === "POST") {
-    await DB.prepare("UPDATE tracks SET plays = plays + 1 WHERE id = ?").bind(x[1]).run();
+    const played = await DB.prepare("UPDATE tracks SET plays = plays + 1 WHERE id = ?").bind(x[1]).run();
+    if(Number(played.meta?.changes ?? played.changes ?? 0) === 0) return json({error:"Track not found"},404);
     return json({ ok: true });
   }
   if ((x = path.match(/^\/api\/react\/([\w-]+)$/)) && m === "POST") {
@@ -1541,6 +1700,17 @@ async function api(req, env, url, ctx) {
   // ---------- admin only ----------
   const sid = auth?.token;
   if (!sid || auth.role !== "admin") return json({ error: "Admin access required." }, 403);
+  if(path==="/api/admin/version" && m==="GET") return json({version:BUILD_VERSION,label:BUILD_LABEL},200,{"cache-control":"no-store"});
+  if(path==="/api/admin/crons" && m==="GET") {
+    return json(await getCronConfig(DB),200,{"cache-control":"no-store"});
+  }
+  if(path==="/api/admin/crons" && m==="PUT") {
+    const data=await req.json().catch(()=>null);
+    let config;try{config=validateCronConfig(data);}catch(e){return json({error:e.message},400);}
+    await DB.prepare("INSERT INTO settings(key,value) VALUES('cron_config',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(JSON.stringify(config)).run();
+    return json({ok:true,config},200,{"cache-control":"no-store"});
+  }
+
 
   // Read-only administrative overview. Anonymous historical reactions cannot be
   // attributed to accounts retroactively, so only authenticated actions are counted.
@@ -1734,6 +1904,15 @@ async function api(req, env, url, ctx) {
     stmts.push(...artistIndexStatements(DB,t));
     await DB.batch(stmts);
     await fulfil(env, t).catch(() => {}); // takes matching requests out of the queue
+    // Automatically warm biography and artwork for new artists/albums. Never
+    // fail an upload because a third-party artwork service is unavailable.
+    if(ctx?.waitUntil) ctx.waitUntil((async()=>{
+      for(const artist of (t.artists||[]).slice(0,3)) {
+        try { await serveBio(env,new URL("https://localhost/api/bio?name="+encodeURIComponent(artist)),null); } catch {}
+        try { await serveArt(env,new URL("https://localhost/art/artist?name="+encodeURIComponent(artist))); } catch {}
+        if(t.album) try { await serveArt(env,new URL("https://localhost/art/album?artist="+encodeURIComponent(artist)+"&album="+encodeURIComponent(t.album))); } catch {}
+      }
+    })());
     return json(t, 201);
   }
   if (path === "/api/admin/playlists" && m === "POST") {
@@ -1951,6 +2130,10 @@ async function api(req, env, url, ctx) {
 }
 
 export default {
+  async scheduled(controller,env,ctx) {
+    await init(env);
+    await runDueCronJobs(env,controller.scheduledTime||Date.now());
+  },
   async fetch(req, env, ctx) {
     const url = new URL(req.url);
     if (env.DEEZER_API) DZ = env.DEEZER_API;
@@ -1987,8 +2170,11 @@ export default {
       if (url.pathname.startsWith("/api/")) {
         const res = await api(req, env, url, ctx);
         // CORS only on public read endpoints (not admin)
-        const publicPeer = share && (url.pathname === "/api/tracks" || url.pathname === "/api/playlists" || url.pathname === "/api/user-playlists" || url.pathname === "/api/site" || url.pathname === "/api/peer" || url.pathname === "/api/network/peers");
+        const publicPeer = share && (url.pathname === "/api/tracks" || url.pathname === "/api/playlists" || url.pathname === "/api/user-playlists" || url.pathname === "/api/site" || url.pathname === "/api/peer" || url.pathname === "/api/network/peers" || url.pathname === "/api/catalog-version" || url.pathname === "/api/peer-plays");
         const output=withCors(res,publicPeer);
+        if(req.method !== "GET" && output.ok && changesCatalogue(url.pathname)) {
+          try { await touchCatalogue(env.DB); } catch(e) {console.warn("Unable to update catalogue revision",e.message);}
+        }
         if(req.method !== "GET") invalidatePublicCache(req,url,output,ctx);
         return await storePublicResponse(req,url,output,ctx);
       }

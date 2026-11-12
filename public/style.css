@@ -481,3 +481,15 @@ body.up-open #lyrics.full{right:340px}
 .playlist-ratings .playlist-heart{min-height:44px;white-space:nowrap}
 .playlist-ratings .playlist-heart.on{color:var(--accent);border-color:var(--accent)}
 .playlist-ratings small{min-width:1ch}
+
+/* WASP v14.0.2 admin network schedules and build identifier */
+#panel .side{display:flex;flex-direction:column;min-height:100vh}
+.admin-build{margin-top:auto;padding:12px 14px 6px;border-top:1px solid var(--line);color:var(--muted);font-size:11px;line-height:1.5;overflow-wrap:anywhere}
+.cron-job legend{font-weight:650;padding:0 8px}
+.cron-job input[type=checkbox]{accent-color:var(--accent);width:18px;height:18px;vertical-align:middle}
+.cron-fields{display:flex;align-items:flex-end;gap:18px;flex-wrap:wrap}
+.cron-fields label{display:flex;flex-direction:column;gap:7px;color:var(--muted);font-size:13px}
+.cron-fields input,.cron-fields select,#cronTimezone{height:44px;border:1px solid var(--line2);border-radius:20px;background:var(--panel);color:var(--text);padding:0 15px;max-width:100%}
+.cron-fields.cron-disabled{opacity:.5}
+#cronTimezone{display:block;margin:8px 0 10px;min-width:240px}
+@media(max-width:860px){#panel .side{min-height:0}.admin-build{margin-top:18px}}

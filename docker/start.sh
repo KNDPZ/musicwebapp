@@ -19,9 +19,15 @@ if [ -n "${SPOTIFY_CLIENT_ID:-}" ] && [ -n "${SPOTIFY_CLIENT_SECRET:-}" ]; then
 else
   rm -f /app/.dev.vars
 fi
+# Keep the JSON origin map intact. A shell parameter expansion containing a
+# literal { default appends an extra } when the variable is already set.
+PEER_ORIGIN_ALIASES="${PEER_RELAY_ALIASES:-}"
+if [ -z "$PEER_ORIGIN_ALIASES" ]; then PEER_ORIGIN_ALIASES='{}'; fi
 node /app/docker/gateway.mjs &
 GATEWAY_PID=$!
-npx wrangler dev -c wrangler.local.jsonc --ip 127.0.0.1 --port 8787 --persist-to /app/.wrangler/state --local --var "SCANNER_SECRET:$SCANNER_SECRET" &
+npx wrangler dev -c wrangler.local.jsonc --ip 127.0.0.1 --port 8787 --persist-to /app/.wrangler/state --local --var "SCANNER_SECRET:$SCANNER_SECRET" --var "PEER_ORIGIN_ALIASES:$PEER_ORIGIN_ALIASES" --var "PEER_PLAY_SYNC:${PEER_PLAY_SYNC:-1}" &
 WORKER_PID=$!
-trap 'kill "$GATEWAY_PID" "$WORKER_PID" 2>/dev/null || true' EXIT INT TERM
+node /app/docker/cron-poller.mjs &
+CRON_PID=$!
+trap 'kill "$GATEWAY_PID" "$WORKER_PID" "$CRON_PID" 2>/dev/null || true' EXIT INT TERM
 exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile

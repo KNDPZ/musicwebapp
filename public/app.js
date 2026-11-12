@@ -4,6 +4,7 @@ import { artistArt as _artistArt, albumArt as _albumArt, albumName, artistsOf, a
 // Cloudflare Workers keep using their existing direct-peer behavior.
 const peerRelays = new Map();
 const peerSourceOrigins = new Map();
+const peerCanonicalOrigins = new Map();
 function registeredPeerOrigin(origin) { return peerSourceOrigins.get(origin) || origin; }
 function peerResourceUrl(origin, resource) {
   const base=peerRelays.get(String(origin||'').replace(/\/$/,'')) || String(origin||'').replace(/\/$/,'');
@@ -16,7 +17,7 @@ function registerPeerRelay(peer) {
   peerRelays.set(origin,base);
   peerSourceOrigins.set(origin,origin);
   for (const alias of (Array.isArray(peer.origin_aliases) ? peer.origin_aliases : [])) {
-    try { const canonical=new URL(alias).origin;peerRelays.set(canonical,base);peerSourceOrigins.set(canonical,origin); } catch {}
+    try { const canonical=new URL(alias).origin;peerRelays.set(canonical,base);peerSourceOrigins.set(canonical,origin);if(!peerCanonicalOrigins.has(origin))peerCanonicalOrigins.set(origin,canonical); } catch {}
   }
 }
 // Prefix peer origin so remote artwork and audio are fetched from Docker's
@@ -148,6 +149,12 @@ document.addEventListener("error",e=>{
 },true);
 
 let loadError = "";
+let catalogueRevision = "";
+let lastCatalogueCheck = 0;
+let loadingCatalogue = false;
+let peerRevisionSnapshot = new Map();
+const catalogueURL=(path)=>catalogueRevision && catalogueRevision!=="0" ? path+"?v="+encodeURIComponent(catalogueRevision) : path;
+
 const arr = (x) => (Array.isArray(x) ? x : []);
 async function getJson(url) { // { data } or { fail: "what went wrong" }
   const ctrl = new AbortController();
@@ -176,7 +183,12 @@ async function loadPeers(localIds) {
     try {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 10000);
-      const r = await fetch((peer.relay_base || peer.url).replace(/\/$/, "") + "/api/tracks", { signal: ctrl.signal, headers: { accept: "application/json" } });
+      const base=(peer.relay_base||peer.url).replace(/\/$/, "");
+      let revision="";
+      try {const v=await fetch(base+"/api/catalog-version",{signal:AbortSignal.timeout(5000),cache:"no-store"});
+        if(v.ok){revision=(await v.json()).revision||"";peerRevisionSnapshot.set(peer.url.replace(/\/$/,""),revision);}
+      }catch{}
+      const r = await fetch(base + "/api/tracks" + (revision&&revision!=="0" ? "?v="+encodeURIComponent(revision) : ""), { signal: ctrl.signal, headers: { accept: "application/json" } });
       clearTimeout(timer);
       if (!r.ok) return;
       const list = arr(await r.json());
@@ -222,7 +234,11 @@ function dedupeCatalogue(items) {
   return output;
 }
 async function load() {
+  if(loadingCatalogue)return;
+  loadingCatalogue=true;
   try {
+  try {const r=await fetch("/api/catalog-version",{cache:"no-store"});if(r.ok)catalogueRevision=(await r.json()).revision||"";}catch{}
+
   const steps = [
     ["/api/tracks", "Songs"],
     ["/api/playlists", "Playlists"],
@@ -232,7 +248,7 @@ async function load() {
   let done = 0;
   paintBoot(6, "Songs");
   const results = await Promise.all(steps.map(async ([url, label], i) => {
-    const r = await getJson(url);
+    const r = await getJson(["/api/tracks","/api/playlists"].includes(url)?catalogueURL(url):url);
     done++;
     paintBoot(8 + done * 22, steps[Math.min(done, steps.length - 1)][1] || label);
     return r;
@@ -241,7 +257,7 @@ async function load() {
   entity = { artist: (en.data && en.data.artist) || {}, playlist: (en.data && en.data.playlist) || {} };
   ratedPlaylistCache = arr(en.data?.playlist_meta);
   tracks = arr(t.data); playlists = arr(p.data);
-  try {const r=await fetch("/api/user-playlists");if(r.ok)userPublicPlaylists=arr(await r.json());}catch{}
+  try {const r=await fetch(catalogueURL("/api/user-playlists"));if(r.ok)userPublicPlaylists=arr(await r.json());}catch{}
   peerPlaylists=[];
   loadError = t.fail || p.fail || (t.data && !Array.isArray(t.data) ? "/api/tracks returned something unexpected" : "");
   if (s.data && typeof s.data.name === "string") { site = { ...s.data, ad: s.data.ad || { enabled: false, html: "", height: 340 } }; store.set("site", { name: site.name, title: site.title, favicon: site.favicon, show_brand_icon: site.show_brand_icon }); applySite(); }
@@ -257,7 +273,9 @@ async function load() {
         const origin=peer.url.replace(/\/$/,"");
         registerPeerRelay(peer);
         const via=peer.relay_base || origin;
-        const [a,b]=await Promise.allSettled([fetch(via+"/api/playlists"),fetch(via+"/api/user-playlists")]);
+        const peerRev=peerRevisionSnapshot.get(origin);
+        const v=peerRev && peerRev!=="0" ? "?v="+encodeURIComponent(peerRev) : "";
+        const [a,b]=await Promise.allSettled([fetch(via+"/api/playlists"+v),fetch(via+"/api/user-playlists"+v)]);
         const system=a.status==="fulfilled"&&a.value.ok?arr(await a.value.json()):[];
         const users=b.status==="fulfilled"&&b.value.ok?arr(await b.value.json()):[];
         const lists=[...system.map(p=>({...p,kind:"server"})),...users.map(p=>({...p,kind:"user"}))];
@@ -265,6 +283,24 @@ async function load() {
           tracks:arr(p.tracks).map(id=>String(id).startsWith("peer:")?id:origin+"|"+id)})));
       }catch{}
     }));
+  }catch{}
+  // Cross-server listening summaries: include play counts recorded on this
+  // server for peer tracks, plus summaries from reachable connected peers.
+  try {
+    const peers=arr(await (await fetch("/api/network/peers")).json());
+    const endpoints=["/api/peer-plays",...peers.map(p=>(p.relay_base||p.url)+"/api/peer-plays")];
+    const rows=(await Promise.all(endpoints.map(u=>fetch(u,{signal:AbortSignal.timeout(6000)})
+      .then(r=>r.ok?r.json():[]).catch(()=>[])))).flat();
+    const totals=new Map();
+    for(const row of rows){
+      const key=String(row.origin||"").replace(/\/$/,"")+"|"+row.remote_id;
+      totals.set(key,(totals.get(key)||0)+Math.max(0,Number(row.plays)||0));
+    }
+    for(const t of [...tracks,...remote]){
+      const origin=t.origin ? registeredPeerOrigin(t.origin) : location.origin;
+      const key=(peerCanonicalOrigins.get(origin)||origin)+"|"+(t.remote_id||t.id);
+      t.plays=(Number(t.plays)||0)+(totals.get(key)||0);
+    }
   }catch{}
   if (remote.length) tracks = dedupeCatalogue(tracks.concat(remote));
   else tracks = dedupeCatalogue(tracks);
@@ -300,8 +336,35 @@ async function load() {
     const el = $("#list");
     if (el) el.innerHTML = errorBox("This page couldn't be shown.", loadError);
     hideBoot();
-  }
+  } finally {loadingCatalogue=false;}
 }
+// Check a cheap one-row revision instead of continuously downloading tracks.
+// When a change is published, the next re-fetch uses a revision-keyed edge cache.
+async function pollCatalogueChanges() {
+  if(document.hidden || loadingCatalogue)return;
+  if(Date.now()-lastCatalogueCheck<20000)return;
+  lastCatalogueCheck=Date.now();
+  let updated=false;
+  try {const r=await fetch("/api/catalog-version",{cache:"no-store"});if(r.ok){
+    const value=(await r.json()).revision||"0";
+    if(catalogueRevision && value!==catalogueRevision)updated=true;
+  }}catch{}
+  try {
+    const peers=arr(await (await fetch("/api/network/peers",{cache:"no-store"})).json());
+    for(const peer of peers){
+      const origin=peer.url?.replace(/\/$/,"");if(!origin)continue;
+      const response=await fetch((peer.relay_base||origin)+"/api/catalog-version",{cache:"no-store",signal:AbortSignal.timeout(6000)});
+      if(!response.ok)continue;
+      const revision=(await response.json()).revision||"0";
+      if(peerRevisionSnapshot.has(origin)&&peerRevisionSnapshot.get(origin)!==revision)updated=true;
+      peerRevisionSnapshot.set(origin,revision);
+    }
+  }catch{}
+  if(updated)await load();
+}
+setInterval(pollCatalogueChanges,30000);
+document.addEventListener("visibilitychange",()=>{if(!document.hidden)pollCatalogueChanges();});
+window.addEventListener("hashchange",()=>{pollCatalogueChanges();});
 const errorBox = (text, detail) => `<div class="empty"><p>${esc(text)}</p>${detail ? `<details style="margin:12px 0"><summary style="justify-content:center;font-size:14px">Details</summary><p class="muted" style="word-break:break-word">${esc(detail)}</p></details>` : ""}<button class="btn" type="button" data-act="retry">Try again</button></div>`;
 
 // ---------- routing ----------
@@ -1193,8 +1256,7 @@ function play(id) {
   qi = queue.indexOf(id);
   if (qi < 0) { queue = [id]; qi = 0; }
   audio.dataset.id = id; counted = false; left = repeat ? repeat - 1 : 0;
-  // Skip play-count for remote tracks (they live on another server)
-  if (t.origin) counted = true;
+  // Peer listens count on this WASP instance without altering the peer's files.
   audio.src = mediaUrl(t, "/audio/" + enc(t.remote_id || (t.origin && String(id).startsWith(t.origin+"|") ? String(id).slice(t.origin.length+1) : id)));
   audio.play().catch(() => {});
   $("#pc").innerHTML = art(albumArt(t), albumName(t) || t.title, "lg");
@@ -1583,7 +1645,8 @@ audio.addEventListener("timeupdate", () => {
   const t = cur();
   if (t && !counted && audio.currentTime >= 10) {
     counted = true; t.plays++;
-    fetch("/api/play/" + t.id, { method: "POST" }).catch(() => {});
+    if(t.origin) fetch("/api/play-peer",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({origin:registeredPeerOrigin(t.origin),remote_id:t.remote_id||String(t.id).split("|").at(-1)})}).catch(()=>{});
+    else fetch("/api/play/" + t.id, { method: "POST" }).catch(() => {});
   }
 });
 audio.addEventListener("play", () => { setTip("#pp", "Pause"); $("#ppi").innerHTML = '<path d="M6 4h4v16H6zM14 4h4v16h-4z"/>'; });
