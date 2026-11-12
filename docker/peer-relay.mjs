@@ -9,7 +9,7 @@
 import http from 'node:http';
 import https from 'node:https';
 
-const ALLOWED_API = new Set(['/api/peer', '/api/tracks', '/api/playlists', '/api/user-playlists', '/api/site', '/api/catalog-version', '/api/peer-plays', '/api/bio', '/api/lineup', '/api/similar']);
+const ALLOWED_API = new Set(['/api/peer', '/api/tracks', '/api/playlists', '/api/user-playlists', '/api/site', '/api/catalog-version', '/api/peer-plays', '/api/recent-listens', '/api/bio', '/api/lineup', '/api/similar']);
 const ALLOWED_ART = /^\/art\/(?:track|album|artist|playlist|user-playlist(?:\/[a-zA-Z0-9_-]+)?)$/;
 const ALLOWED_AUDIO = /^\/audio\/[a-zA-Z0-9_-]+$/;
 const HOP = new Set(['connection','keep-alive','proxy-authorization','proxy-authenticate','te','trailer','transfer-encoding','upgrade','proxy-connection']);

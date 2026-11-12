@@ -222,6 +222,10 @@
           <p class="msg" id="netAddMsg" role="status"></p>
         </div>
         <div id="netPeers" class="muted">No peers yet.</div>
+        <div id="netSyncProgress" hidden style="margin-top:12px" role="status" aria-live="polite">
+          <label id="netSyncStatus" for="netSyncBar" class="muted">Syncing metadata…</label>
+          <progress id="netSyncBar" max="100" value="0" style="width:100%;height:15px;accent-color:var(--accent,#c8f169)"></progress>
+        </div>
         <p class="msg" id="netMsg" role="status"></p>
       </div>
       </div>

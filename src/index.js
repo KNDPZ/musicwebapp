@@ -2,8 +2,8 @@
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "14.0.2";
-const BUILD_LABEL = "Library Refresh & Peer Listening";
+const BUILD_VERSION = "14.0.3";
+const BUILD_LABEL = "Peer Sync & Recently Listened";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -44,6 +44,7 @@ const PUBLIC_CACHE_TTLS = Object.freeze({
   "/api/site": 120,
   "/api/entity-reactions": 5,
   "/api/track-reaction-counts": 5,
+  "/api/recent-listens": 10,
 });
 const CACHE_REV = "wasp-v14-2";
 const publicRevision = url => /^[a-f0-9-]{1,40}$/i.test(url.searchParams.get("v") || "") ? url.searchParams.get("v") : "";
@@ -119,12 +120,24 @@ function init(env) {
     let marker;
     try {marker=await q("SELECT value FROM settings WHERE key = 'wasp_schema_version'").first();}
     catch {await q("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL)").run();}
-    if(marker?.value === "14.2")return;
+    if(marker?.value === "14.3")return;
+    if(marker?.value === "14.2"){
+      await q("CREATE TABLE IF NOT EXISTS peer_catalogue_cache (peer_id TEXT PRIMARY KEY, tracks TEXT NOT NULL DEFAULT '[]', playlists TEXT NOT NULL DEFAULT '[]', users TEXT NOT NULL DEFAULT '[]', revision TEXT NOT NULL DEFAULT '', synced_at INTEGER NOT NULL DEFAULT 0)",
+      "CREATE TABLE IF NOT EXISTS peer_catalogue_chunks (peer_id TEXT NOT NULL,kind TEXT NOT NULL,shard INTEGER NOT NULL,body TEXT NOT NULL,PRIMARY KEY(peer_id,kind,shard))").run();
+      await q("CREATE TABLE IF NOT EXISTS recent_listens (id TEXT PRIMARY KEY, track_id TEXT NOT NULL, origin TEXT NOT NULL DEFAULT '', remote_id TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', artist TEXT NOT NULL DEFAULT '', album TEXT NOT NULL DEFAULT '', cover_url TEXT NOT NULL DEFAULT '', played_at INTEGER NOT NULL)").run();
+      await q("CREATE INDEX IF NOT EXISTS idx_recent_listens_time ON recent_listens(played_at DESC)").run();
+      await q("UPDATE settings SET value='14.3' WHERE key='wasp_schema_version' AND value='14.2'").run();
+      return;
+    }
     if(marker?.value === "14"){
       // Strictly additive upgrade: preserve all v14 tables and artist mappings.
       await q("CREATE TABLE IF NOT EXISTS peer_listens(origin TEXT NOT NULL,remote_id TEXT NOT NULL,plays INTEGER NOT NULL DEFAULT 0,synced_plays INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(origin,remote_id))").run();
       await q("CREATE INDEX IF NOT EXISTS idx_tracks_created ON tracks(created_at DESC)").run();
-      await q("UPDATE settings SET value='14.2' WHERE key='wasp_schema_version' AND value='14'").run();
+      await q("CREATE TABLE IF NOT EXISTS peer_catalogue_cache (peer_id TEXT PRIMARY KEY, tracks TEXT NOT NULL DEFAULT '[]', playlists TEXT NOT NULL DEFAULT '[]', users TEXT NOT NULL DEFAULT '[]', revision TEXT NOT NULL DEFAULT '', synced_at INTEGER NOT NULL DEFAULT 0)",
+      "CREATE TABLE IF NOT EXISTS peer_catalogue_chunks (peer_id TEXT NOT NULL,kind TEXT NOT NULL,shard INTEGER NOT NULL,body TEXT NOT NULL,PRIMARY KEY(peer_id,kind,shard))").run();
+      await q("CREATE TABLE IF NOT EXISTS recent_listens (id TEXT PRIMARY KEY, track_id TEXT NOT NULL, origin TEXT NOT NULL DEFAULT '', remote_id TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', artist TEXT NOT NULL DEFAULT '', album TEXT NOT NULL DEFAULT '', cover_url TEXT NOT NULL DEFAULT '', played_at INTEGER NOT NULL)").run();
+      await q("CREATE INDEX IF NOT EXISTS idx_recent_listens_time ON recent_listens(played_at DESC)").run();
+      await q("UPDATE settings SET value='14.3' WHERE key='wasp_schema_version' AND value='14'").run();
       return;
     }
     // Multiple Cloudflare isolates may start together across data centers.
@@ -141,7 +154,7 @@ function init(env) {
         for(let attempt=0;attempt<20;attempt++) {
           await new Promise(resolve=>setTimeout(resolve,500));
           const marker=await q("SELECT value FROM settings WHERE key = 'wasp_schema_version'").first();
-          if(marker?.value === "14.2") return;
+          if(marker?.value === "14.3") return;
         }
         throw new Error("A WASP database migration is still running. Please retry shortly.");
       }
@@ -150,7 +163,7 @@ function init(env) {
     // Another isolate may have completed the migration after our first check
     // but before this isolate acquired the released lease.
     const afterLease=await q("SELECT value FROM settings WHERE key = 'wasp_schema_version'").first();
-    if(afterLease?.value === "14.2") return;
+    if(afterLease?.value === "14.3") return;
     // Run each statement on its own. D1 batch() is atomic: one failure rolls the whole
     // batch back, so a hiccup on a new table/index during an upgrade used to take the
     // entire site down. Individual try/catch keeps the site up even if one step fails.
@@ -163,6 +176,9 @@ function init(env) {
       "CREATE TABLE IF NOT EXISTS playlist_hearts (playlist_id TEXT NOT NULL, voter TEXT NOT NULL, PRIMARY KEY (playlist_id, voter))",
       "CREATE TABLE IF NOT EXISTS peer_track_refs (ref TEXT PRIMARY KEY, origin TEXT NOT NULL, remote_id TEXT NOT NULL, title TEXT, artist TEXT, album TEXT, duration REAL)",
       "CREATE TABLE IF NOT EXISTS peer_listens (origin TEXT NOT NULL, remote_id TEXT NOT NULL, plays INTEGER NOT NULL DEFAULT 0, synced_plays INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(origin,remote_id))",
+      "CREATE TABLE IF NOT EXISTS peer_catalogue_cache (peer_id TEXT PRIMARY KEY, tracks TEXT NOT NULL DEFAULT '[]', playlists TEXT NOT NULL DEFAULT '[]', users TEXT NOT NULL DEFAULT '[]', revision TEXT NOT NULL DEFAULT '', synced_at INTEGER NOT NULL DEFAULT 0)",
+      "CREATE TABLE IF NOT EXISTS peer_catalogue_chunks (peer_id TEXT NOT NULL,kind TEXT NOT NULL,shard INTEGER NOT NULL,body TEXT NOT NULL,PRIMARY KEY(peer_id,kind,shard))",
+      "CREATE TABLE IF NOT EXISTS recent_listens (id TEXT PRIMARY KEY, track_id TEXT NOT NULL, origin TEXT NOT NULL DEFAULT '', remote_id TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', artist TEXT NOT NULL DEFAULT '', album TEXT NOT NULL DEFAULT '', cover_url TEXT NOT NULL DEFAULT '', played_at INTEGER NOT NULL)",
       "CREATE TABLE IF NOT EXISTS attempts (ip TEXT NOT NULL, ts INTEGER NOT NULL)",
       `CREATE TABLE IF NOT EXISTS tracks (
         id TEXT PRIMARY KEY, title TEXT NOT NULL, artist TEXT NOT NULL, album TEXT NOT NULL,
@@ -240,7 +256,7 @@ function init(env) {
     if(afterLease?.value !== "14") await rebuildArtistMap(env.DB);
     // Only set the marker after all essential work succeeds; partial migrations
     // safely retry on the next cold start rather than hiding a missing index.
-    await q("INSERT INTO settings(key,value) VALUES('wasp_schema_version','14.2') ON CONFLICT(key) DO UPDATE SET value=excluded.value").run();
+    await q("INSERT INTO settings(key,value) VALUES('wasp_schema_version','14.3') ON CONFLICT(key) DO UPDATE SET value=excluded.value").run();
     } finally {
       if(claimed) await q("DELETE FROM settings WHERE key='wasp_v14_migration_lease' AND value=?").bind(lease).run().catch(()=>{});
     }
@@ -1007,7 +1023,7 @@ async function catalogueVersion(DB) {
 }
 
 const CRON_TYPES = ["peers","artwork","biography"];
-const CRON_DEFAULT_JOB = {enabled:false,frequency:"daily",time:"02:00",weekday:0,monthday:1};
+const CRON_DEFAULT_JOB = {enabled:false,frequency:"daily",time:"02:00",weekday:0,monthday:1,sync_catalogue:false};
 function cronConfigDefault() {
   return {timezone:"Asia/Manila",jobs:Object.fromEntries(CRON_TYPES.map(x=>[x,{...CRON_DEFAULT_JOB}]))};
 }
@@ -1020,7 +1036,7 @@ function validateCronConfig(value) {
     if(!["daily","weekly","monthly"].includes(frequency))throw Error("Invalid frequency for "+kind);
     const time=String(source.time||"00:00"),weekday=Number(source.weekday??0),monthday=Number(source.monthday??1);
     if(!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(time)||!Number.isInteger(weekday)||weekday<0||weekday>6||!Number.isInteger(monthday)||monthday<1||monthday>30)throw Error("Invalid schedule for "+kind);
-    cfg.jobs[kind]={enabled:source.enabled===true,frequency,time,weekday,monthday};
+    cfg.jobs[kind]={enabled:source.enabled===true,frequency,time,weekday,monthday,...(kind==="peers"?{sync_catalogue:source.sync_catalogue===true}:{})};
   }
   return cfg;
 }
@@ -1053,10 +1069,68 @@ async function warmArtistMetadata(env,row,kind){
     }
   }
 }
+// Metadata-only peer sync. Audio objects remain exclusively on the source server.
+// Each phase is bounded and independently committed so the admin interface can
+// show real, completed stages instead of a simulated progress animation.
+const SYNC_PHASES=Object.freeze({tracks:["/api/tracks","tracks",6000],playlists:["/api/playlists","playlists",500],users:["/api/user-playlists","users",500]});
+async function syncPeerPhase(env,peer,phase){
+  const spec=SYNC_PHASES[phase];if(!spec)throw Error("Invalid sync stage");
+  // A unique query string opts out of v14 edge-cached catalogue responses.
+  const target=peer.url+spec[0]+"?sync="+crypto.randomUUID();
+  const response=await fetch(target,{headers:{accept:"application/json","cache-control":"no-cache"},signal:AbortSignal.timeout(25000)});
+  if(!response.ok)throw Error("Peer " + phase + " returned HTTP " + response.status);
+  const raw=await response.text();
+  if(raw.length>8000000)throw Error("Peer metadata exceeds the sync size limit");
+  let data;try{data=JSON.parse(raw);}catch{throw Error("Peer metadata is not valid JSON");}
+  if(!Array.isArray(data)||data.length>spec[2])throw Error("Peer returned an invalid " + phase + " catalogue");
+  // Chunk the snapshot so each D1 row stays comfortably below its 2 MB limit.
+  // Never fetch audio or images; these are metadata JSON fragments only.
+  const chunks=[];let segment=[],size=2;
+  for(const item of data){
+    const part=JSON.stringify(item),bytes=new TextEncoder().encode(part).byteLength;
+    if(bytes>240000)throw Error("One peer metadata item exceeds the supported size");
+    if(segment.length && size+bytes+1>240000){chunks.push(JSON.stringify(segment));segment=[];size=2;}
+    segment.push(item);size+=bytes+1;
+  }
+  if(segment.length)chunks.push(JSON.stringify(segment));
+  await env.DB.prepare("INSERT OR IGNORE INTO peer_catalogue_cache(peer_id) VALUES(?)").bind(peer.id).run();
+  const statements=[env.DB.prepare("DELETE FROM peer_catalogue_chunks WHERE peer_id=? AND kind=?").bind(peer.id,phase)];
+  for(let i=0;i<chunks.length;i++)statements.push(env.DB.prepare("INSERT INTO peer_catalogue_chunks(peer_id,kind,shard,body) VALUES(?,?,?,?)").bind(peer.id,phase,i,chunks[i]));
+  statements.push(env.DB.prepare("UPDATE peer_catalogue_cache SET synced_at=? WHERE peer_id=?").bind(Date.now(),peer.id));
+  await env.DB.batch(statements);
+  if(phase==="tracks")await env.DB.prepare("UPDATE peers SET track_count=?,last_ok=?,last_error=NULL WHERE id=?")
+    .bind(data.length,Date.now(),peer.id).run();
+  return {phase,count:data.length};
+}
+async function snapshotPeerRevision(env,peer){
+  let revision="";
+  try {
+    const r=await fetch(peer.url+"/api/catalog-version?sync="+crypto.randomUUID(),{
+      signal:AbortSignal.timeout(6000),headers:{accept:"application/json"}});
+    if(r.ok)revision=clean((await r.json()).revision,80);
+  }catch{}
+  if(revision)await env.DB.prepare("UPDATE peer_catalogue_cache SET revision=? WHERE peer_id=?").bind(revision,peer.id).run();
+  return revision;
+}
+async function syncPeerAll(env,peer){
+  const counts={};for(const phase of Object.keys(SYNC_PHASES)){
+    const result=await syncPeerPhase(env,peer,phase);counts[phase]=result.count;
+  }
+  counts.revision=await snapshotPeerRevision(env,peer);
+  await touchCatalogue(env.DB);
+  return counts;
+}
+async function recordListen(DB,{track_id,origin='',remote_id='',title='',artist='',album='',cover_url=''}){
+  await DB.prepare("INSERT INTO recent_listens (id,track_id,origin,remote_id,title,artist,album,cover_url,played_at) VALUES (?,?,?,?,?,?,?,?,?)")
+    .bind(crypto.randomUUID(),clean(track_id,200),clean(origin,300),clean(remote_id,100),clean(title,200),clean(artist,200),clean(album,200),clean(cover_url,500),Date.now()).run();
+  // Bound storage without a full-table cleanup on every play.
+  if(Math.random()<0.02)await DB.prepare("DELETE FROM recent_listens WHERE id IN (SELECT id FROM recent_listens ORDER BY played_at DESC LIMIT -1 OFFSET 1000)").run();
+}
 async function runCronJob(env,kind){
   if(kind==="peers"){
     const rows=(await env.DB.prepare("SELECT id,url,track_count FROM peers ORDER BY added_at LIMIT 60").all()).results;
     let updated=0;
+    const config=await getCronConfig(env.DB);
     for(const row of rows){
       try{
         const res=await fetch(row.url+"/api/peer",{signal:AbortSignal.timeout(6000),headers:{accept:"application/json"}});
@@ -1066,6 +1140,7 @@ async function runCronJob(env,kind){
         if(count!==Number(row.track_count))updated++;
         await env.DB.prepare("UPDATE peers SET track_count=?,name=?,last_ok=?,last_error=NULL WHERE id=?")
           .bind(count,clean(json.name)||row.url,Date.now(),row.id).run();
+        if(config.jobs.peers?.sync_catalogue)await syncPeerAll(env,row);
       }catch{/* Peer remains in registry; transient network errors never delete it. */}
     }
     return {checked:rows.length,updated};
@@ -1126,6 +1201,7 @@ async function api(req, env, url, ctx) {
       }
     }catch{}
     await DB.prepare("INSERT INTO peer_listens(origin,remote_id,plays) VALUES(?,?,1) ON CONFLICT(origin,remote_id) DO UPDATE SET plays=plays+1").bind(canonical,remote).run();
+    await recordListen(DB,{track_id:remote,origin:canonical,remote_id:remote,title:b.title,artist:b.artist,album:b.album,cover_url:b.cover_url});
     // Docker can send genuine listening events directly to its configured
     // source peer via Bridge. The source already exposes an anonymous /api/play
     // counter; this is what lets main Cloudflare charts reflect Docker listens.
@@ -1158,6 +1234,19 @@ async function api(req, env, url, ctx) {
       online: !!(p.last_ok && !p.last_error),
       last_ok: p.last_ok || null,
     })));
+  }
+  if(path==="/api/peer-catalogue" && m==="GET"){
+    const rows=(await DB.prepare("SELECT c.peer_id,c.synced_at,c.revision,p.url FROM peer_catalogue_cache c JOIN peers p ON p.id=c.peer_id WHERE c.synced_at>0 ORDER BY p.added_at").all()).results;
+    const shards=(await DB.prepare("SELECT peer_id,kind,shard,body FROM peer_catalogue_chunks ORDER BY peer_id,kind,shard").all()).results;
+    const mapping=new Map(rows.map(row=>[row.peer_id,{peer_id:row.peer_id,origin:row.url,synced_at:row.synced_at,revision:row.revision,tracks:[],playlists:[],users:[]}]));
+    for(const part of shards){const item=mapping.get(part.peer_id);if(item && ["tracks","playlists","users"].includes(part.kind)){
+      item[part.kind].push(...JSON.parse(part.body));
+    }}
+    return json([...mapping.values()],200,{"cache-control":"no-store"});
+  }
+  if(path==="/api/recent-listens" && m==="GET"){
+    const rows=(await DB.prepare("SELECT r.track_id,r.origin,r.remote_id,r.title,r.artist,r.album,r.cover_url,r.played_at,COALESCE(t.plays,p.plays,0) AS plays FROM recent_listens r LEFT JOIN tracks t ON r.origin='' AND t.id=r.track_id LEFT JOIN peer_listens p ON r.origin<>'' AND p.remote_id=r.remote_id AND p.origin=r.origin ORDER BY r.played_at DESC LIMIT 50").all()).results;
+    return json(rows,200,{"cache-control":"no-store"});
   }
   // Local-only scanner authentication. This secret is never configured on the production Worker.
   if(path==="/api/internal/cron-tick" && m==="POST") {
@@ -1498,6 +1587,8 @@ async function api(req, env, url, ctx) {
   if ((x = path.match(/^\/api\/play\/([\w-]+)$/)) && m === "POST") {
     const played = await DB.prepare("UPDATE tracks SET plays = plays + 1 WHERE id = ?").bind(x[1]).run();
     if(Number(played.meta?.changes ?? played.changes ?? 0) === 0) return json({error:"Track not found"},404);
+    const track=await DB.prepare("SELECT id,title,artist,album FROM tracks WHERE id=?").bind(x[1]).first();
+    if(track)await recordListen(DB,{track_id:track.id,remote_id:track.id,title:track.title,artist:track.artist,album:track.album});
     return json({ ok: true });
   }
   if ((x = path.match(/^\/api\/react\/([\w-]+)$/)) && m === "POST") {
@@ -2098,8 +2189,24 @@ async function api(req, env, url, ctx) {
     return json({ id, url: raw, name: peerInfo.name || raw, track_count: peerInfo.tracks || 0, online: true, last_ok: now }, 201);
   }
   if ((x = path.match(/^\/api\/admin\/network\/peers\/([\w-]+)$/)) && m === "DELETE") {
+    await DB.prepare("DELETE FROM peer_catalogue_chunks WHERE peer_id = ?").bind(x[1]).run();
+    await DB.prepare("DELETE FROM peer_catalogue_cache WHERE peer_id = ?").bind(x[1]).run();
     await DB.prepare("DELETE FROM peers WHERE id = ?").bind(x[1]).run();
     return json({ ok: true });
+  }
+  if ((x = path.match(/^\/api\/admin\/network\/peers\/([\w-]+)\/sync$/)) && m === "POST") {
+    const peer=await DB.prepare("SELECT id,url,name FROM peers WHERE id=?").bind(x[1]).first();
+    if(!peer)return json({error:"Peer not found"},404);
+    const body=await req.json().catch(()=>({}));
+    try {
+      if(body.phase==="finish"){
+        await snapshotPeerRevision(env,peer);
+        await touchCatalogue(DB);
+        return json({ok:true,phase:"finish",revision:await catalogueVersion(DB)});
+      }
+      const result=await syncPeerPhase(env,peer,body.phase);
+      return json({ok:true,...result});
+    }catch(e){return json({error:e.message||"Peer sync failed"},502);}
   }
   if ((x = path.match(/^\/api\/admin\/network\/peers\/([\w-]+)\/refresh$/)) && m === "POST") {
     const peer = await DB.prepare("SELECT * FROM peers WHERE id = ?").bind(x[1]).first();
@@ -2170,7 +2277,7 @@ export default {
       if (url.pathname.startsWith("/api/")) {
         const res = await api(req, env, url, ctx);
         // CORS only on public read endpoints (not admin)
-        const publicPeer = share && (url.pathname === "/api/tracks" || url.pathname === "/api/playlists" || url.pathname === "/api/user-playlists" || url.pathname === "/api/site" || url.pathname === "/api/peer" || url.pathname === "/api/network/peers" || url.pathname === "/api/catalog-version" || url.pathname === "/api/peer-plays");
+        const publicPeer = share && (url.pathname === "/api/tracks" || url.pathname === "/api/playlists" || url.pathname === "/api/user-playlists" || url.pathname === "/api/site" || url.pathname === "/api/peer" || url.pathname === "/api/network/peers" || url.pathname === "/api/catalog-version" || url.pathname === "/api/peer-plays" || url.pathname === "/api/recent-listens");
         const output=withCors(res,publicPeer);
         if(req.method !== "GET" && output.ok && changesCatalogue(url.pathname)) {
           try { await touchCatalogue(env.DB); } catch(e) {console.warn("Unable to update catalogue revision",e.message);}

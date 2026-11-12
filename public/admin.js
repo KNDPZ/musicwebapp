@@ -734,6 +734,7 @@ function cronJobTemplate(key){
   const id="cron-"+key;
   return `<fieldset class="cron-job" id="${id}" style="border:1px solid var(--line2);border-radius:12px;margin:16px 0;padding:14px">
     <legend><label><input type="checkbox" data-cron="${key}" data-field="enabled"> ${CRON_LABELS[key]}</label></legend>
+    ${key==="peers"?`<label class="check" style="margin:8px 0 12px 12px"><input type="checkbox" data-cron="peers" data-field="sync_catalogue"> Sync peer catalogues and playlists (metadata only)</label>`:""}
     <div class="cron-fields">
       <label>Repeat
         <select data-cron="${key}" data-field="frequency"><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select>
@@ -786,6 +787,7 @@ $("#cronForm").addEventListener("submit",async e=>{
   const config={timezone:$("#cronTimezone").value,jobs:{}};
   for(const key of CRON_KEYS){
     config.jobs[key]={enabled:cronField(key,"enabled").checked,
+      ...(key==="peers"?{sync_catalogue:cronField(key,"sync_catalogue").checked}:{}),
       frequency:cronField(key,"frequency").value,time:cronField(key,"time").value,
       weekday:Number(cronField(key,"weekday").value),monthday:Number(cronField(key,"monthday").value)};
   }
@@ -809,6 +811,7 @@ function peerRow(p) {
   return `<tr data-peer="${p.id}">
     <td><b>${esc(p.name || p.url)}</b><br><span class="muted" style="word-break:break-all">${esc(p.url)}</span><br><span class="muted">${status}</span></td>
     <td style="text-align:right;white-space:nowrap">
+      <button class="btn ghost" data-a="sync" title="Sync metadata only; no music files downloaded" aria-label="Cloud sync metadata" ${small}>☁ ↻</button>
       <button class="btn ghost" data-a="refresh" ${small}>Refresh</button>
       <button class="btn danger" data-a="rm" ${small}>Remove</button>
     </td></tr>`;
@@ -877,14 +880,28 @@ $("#netPeers").addEventListener("click", async (e) => {
     await loadNetwork();
     return;
   }
-  if (b.dataset.a === "refresh") {
-    b.disabled = true; const label = b.textContent; b.textContent = "…";
-    const r = await fetch("/api/admin/network/peers/" + id + "/refresh", { method: "POST" });
-    const j = await r.json().catch(() => ({}));
-    b.disabled = false; b.textContent = label;
-    if (!r.ok) flashMsg("#netMsg", j.error || "Refresh failed.", true);
-    else flashMsg("#netMsg", `Updated “${j.name}”: ${j.track_count || 0} songs.`);
-    await loadNetwork();
+  if (b.dataset.a === "refresh" || b.dataset.a === "sync") {
+    const hard=b.dataset.a==="refresh",label=b.textContent, buttons=[...b.closest("tr").querySelectorAll("button")];
+    buttons.forEach(x=>x.disabled=true);b.textContent="Syncing…";
+    const meter=$("#netSyncProgress"),bar=$("#netSyncBar"),message=$("#netSyncStatus");
+    meter.hidden=false;bar.value=0;message.textContent=hard?"Refreshing peer information…":"Syncing peer metadata…";
+    try {
+      if(hard){const r=await fetch(`/api/admin/network/peers/${encodeURIComponent(id)}/refresh`,{method:"POST",cache:"no-store"});
+        const j=await r.json();if(!r.ok)throw Error(j.error||"Peer refresh failed");}
+      const totals={};const phases=[["tracks",40],["playlists",70],["users",95],["finish",100]];
+      for(const [phase,percent] of phases){
+        message.textContent=`${phase==="finish"?"Publishing":`Syncing ${phase}`}…`;
+        const r=await post(`/api/admin/network/peers/${encodeURIComponent(id)}/sync`,{phase});
+        const j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j.error||`Unable to sync ${phase}`);
+        totals[phase]=j.count||0;bar.value=percent;
+      }
+      message.textContent=`Complete: ${totals.tracks} songs, ${totals.playlists} server playlists, ${totals.users} user playlists.`;
+      flashMsg("#netMsg",`Synced ${totals.tracks} songs and ${totals.playlists+totals.users} playlists. No audio files downloaded.`);
+      // Notify other tabs on the same origin. Their periodic revision check will reload.
+      try{localStorage.setItem("wasp_peer_sync",String(Date.now()));}catch{}
+      await loadNetwork();
+    } catch(err){message.textContent=err.message;flashMsg("#netMsg",err.message,true);}
+    finally{buttons.forEach(x=>x.disabled=false);b.textContent=label;}
   }
 });
 

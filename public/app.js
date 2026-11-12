@@ -42,11 +42,15 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
 const audio = $("#audio");
-const TABS = { recent: "Recently added", top: "Most listened", artists: "Artists", playlists: "Playlists", hearts: "Most hearted", likes: "Most liked", dislikes: "Most disliked", user: "My playlists", settings: "Account settings", request: "Request" };
+const TABS = { recent: "Recently added", top: "Most listened", listened: "Recently listened", artists: "Artists", playlists: "Playlists", hearts: "Most hearted", likes: "Most liked", dislikes: "Most disliked", user: "My playlists", settings: "Account settings", request: "Request" };
 const KEY = { heart: "hearts", like: "likes", dislike: "dislikes" };
 
 let tracks = [], byId = {}, playlists = [], userPublicPlaylists = [], peerPlaylists = [], query = "";
 let peerTrackLookup = new Map();
+let peerSnapshots = new Map();
+let stalePeerSnapshots = new Set();
+let recentListens = [];
+let recentBusy=false;
 let view = { ids: [], label: "", pl: null }; // what the main area is showing (what a click on a row plays)
 let queue = [], qi = -1, qLabel = "", ctxPl = null; // what is playing, and the playlist it came from
 let repeat = store.get("rep", 0), left = 0, counted = false, shufKind = "";
@@ -181,6 +185,22 @@ async function loadPeers(localIds) {
   await Promise.all(peers.map(async (peer) => {
     if (!peer.url) return;
     try {
+      const originKey=peer.url.replace(/\/$/,"");
+      const saved=peerSnapshots.get(originKey);
+      if(saved && saved.synced_at){
+        try {
+          const r=await fetch((peer.relay_base||peer.url)+"/api/catalog-version",{cache:"no-store",signal:AbortSignal.timeout(4000)});
+          if(r.ok){const revision=(await r.json()).revision||"";
+            peerRevisionSnapshot.set(originKey,revision);
+            if(revision && saved.revision && revision!==saved.revision)stalePeerSnapshots.add(originKey);
+          }
+        }catch{}
+      }
+      if(saved && Array.isArray(saved.tracks) && saved.synced_at && !stalePeerSnapshots.has(originKey)){
+        const origin=peer.url.replace(/\/$/,"");
+        for(const t of saved.tracks)if(t?.id)remote.push({...t,id:origin+"|"+t.id,remote_id:t.id,origin,peer_name:peer.name||peer.url});
+        return;
+      }
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 10000);
       const base=(peer.relay_base||peer.url).replace(/\/$/, "");
@@ -262,6 +282,16 @@ async function load() {
   loadError = t.fail || p.fail || (t.data && !Array.isArray(t.data) ? "/api/tracks returned something unexpected" : "");
   if (s.data && typeof s.data.name === "string") { site = { ...s.data, ad: s.data.ad || { enabled: false, html: "", height: 340 } }; store.set("site", { name: site.name, title: site.title, favicon: site.favicon, show_brand_icon: site.show_brand_icon }); applySite(); }
   paintBoot(90, "Network peers");
+  try {
+    const cache=await fetch("/api/peer-catalogue",{cache:"no-store"});
+    if(cache.ok){
+      const old=peerSnapshots;
+      peerSnapshots=new Map(arr(await cache.json()).map(row=>[row.origin.replace(/\/$/,""),row]));
+      for(const [origin,row] of peerSnapshots){
+        if(row.synced_at!==old.get(origin)?.synced_at || row.revision!==old.get(origin)?.revision)stalePeerSnapshots.delete(origin);
+      }
+    }
+  }catch{}
   const localIds = new Set(tracks.map((x) => x.id));
   const remote = await loadPeers(localIds);
   peerTrackLookup = new Map(remote.map(t=>[t.id,t]));
@@ -275,9 +305,14 @@ async function load() {
         const via=peer.relay_base || origin;
         const peerRev=peerRevisionSnapshot.get(origin);
         const v=peerRev && peerRev!=="0" ? "?v="+encodeURIComponent(peerRev) : "";
-        const [a,b]=await Promise.allSettled([fetch(via+"/api/playlists"+v),fetch(via+"/api/user-playlists"+v)]);
-        const system=a.status==="fulfilled"&&a.value.ok?arr(await a.value.json()):[];
-        const users=b.status==="fulfilled"&&b.value.ok?arr(await b.value.json()):[];
+        const saved=peerSnapshots.get(origin);
+        let system=[],users=[];
+        if(saved && saved.synced_at && !stalePeerSnapshots.has(origin)){system=arr(saved.playlists);users=arr(saved.users);}
+        else {
+          const [a,b]=await Promise.allSettled([fetch(via+"/api/playlists"+v),fetch(via+"/api/user-playlists"+v)]);
+          system=a.status==="fulfilled"&&a.value.ok?arr(await a.value.json()):[];
+          users=b.status==="fulfilled"&&b.value.ok?arr(await b.value.json()):[];
+        }
         const lists=[...system.map(p=>({...p,kind:"server"})),...users.map(p=>({...p,kind:"user"}))];
         peerPlaylists.push(...lists.map(p=>({...p,origin,id:origin+"|"+p.id,
           tracks:arr(p.tracks).map(id=>String(id).startsWith("peer:")?id:origin+"|"+id)})));
@@ -364,6 +399,10 @@ async function pollCatalogueChanges() {
 }
 setInterval(pollCatalogueChanges,30000);
 document.addEventListener("visibilitychange",()=>{if(!document.hidden)pollCatalogueChanges();});
+// An admin sync in another tab should refresh the open music view immediately.
+window.addEventListener("storage",event=>{if(event.key==="wasp_peer_sync"){
+  lastCatalogueCheck=0;load();
+}});
 window.addEventListener("hashchange",()=>{pollCatalogueChanges();});
 const errorBox = (text, detail) => `<div class="empty"><p>${esc(text)}</p>${detail ? `<details style="margin:12px 0"><summary style="justify-content:center;font-size:14px">Details</summary><p class="muted" style="word-break:break-word">${esc(detail)}</p></details>` : ""}<button class="btn" type="button" data-act="retry">Try again</button></div>`;
 
@@ -495,7 +534,7 @@ function renderPage() {
   if (tab === "request") { if (sub === "new") requestForm(el); else if (sub === "previous") requestPrevious(el, arg.split("/")[1]); else requestQueue(el); return; }
   // Reaction charts may contain locally cached peer songs even if the remote
   // catalogue is temporarily offline (and this installation has no uploads).
-  const hasChartData = RX.includes(tab) && (
+  const hasChartData = (tab === "listened") || RX.includes(tab) && (
     (sub === 'songs' && peerReactionTracks.size) ||
     (sub === 'artists' && Object.keys(entity.artist).length) ||
     (sub === 'playlists' && (ratedPlaylistCache.length || playlists.length || peerPlaylists.length || userPublicPlaylists.length))
@@ -521,6 +560,7 @@ function renderPage() {
       noView();el.innerHTML=peerPlaylists.length?`<div class="grid s">${peerPlaylists.filter(p=>!query||p.name.toLowerCase().includes(query)).map(p=>playlistTile(p,`from ${new URL(p.origin).hostname}`)).join("")}</div>`:empty("No peer playlists yet.");
     }else playlistGrid(el,false);
   }
+  else if (tab === "listened") {recentListView(el);refreshRecentListens();}
   else if (RX.includes(tab) && sub === "artists") reactedArtists(el, tab);
   else if (RX.includes(tab) && sub === "playlists") reactedPlaylists(el, tab);
   else listView(el, tab);
@@ -603,6 +643,46 @@ function listView(el, tab) {
     : empty(tab === "top" ? "Nothing matches your search." : "Nothing here yet. Songs show up once someone reacts to them.");
 }
 
+// Read-only community listening timeline. No usernames or IP addresses are shared.
+async function refreshRecentListens(){
+  if(recentBusy||document.hidden)return;
+  recentBusy=true;
+  try{
+    const peers=arr(await (await fetch("/api/network/peers",{cache:"no-store"})).json());
+    const sources=[{base:"",origin:location.origin},...peers.map(p=>({base:p.relay_base||p.url,origin:p.url}))];
+    const all=(await Promise.all(sources.map(async source=>{
+      try {const r=await fetch(source.base+"/api/recent-listens",{cache:"no-store",signal:AbortSignal.timeout(6500)});
+        if(!r.ok)return [];
+        return arr(await r.json()).map(x=>({...x,source_server:source.origin}));
+      }catch{return [];}
+    }))).flat();
+    // A peer listen forwarded to its source server can produce two events.
+    const seen=new Set();recentListens=all.sort((x,y)=>Number(y.played_at)-Number(x.played_at)).filter(x=>{
+      const server=x.origin||peerCanonicalOrigins.get(x.source_server)||x.source_server,
+        key=server+"|"+(x.remote_id||x.track_id)+"|"+Math.round(Number(x.played_at)/15000);
+      if(seen.has(key))return false;seen.add(key);return true;
+    }).slice(0,50);
+    if(parse().a==="listened")recentListView($("#list"));
+  }catch{}finally{recentBusy=false;}
+}
+function recentListView(el){
+  if(!el)return;
+  const l=recentListens.filter(x=>!query||`${x.title} ${x.artist} ${x.album}`.toLowerCase().includes(query));
+  const resolved=l.map(event=>{
+    const server=registeredPeerOrigin(event.origin||event.source_server);
+    let t=tracks.find(t=>(t.origin||location.origin)===server && (t.remote_id||t.id)===(event.remote_id||event.track_id));
+    if(!t)t=tracks.find(t=>!t.origin&&server===location.origin&&t.id===event.track_id);
+    return {event,t};
+  });
+  view={ids:resolved.filter(x=>x.t).map(x=>x.t.id),label:"Recently listened",pl:null};
+  el.innerHTML=`<h1>Recently listened</h1><p class="muted" style="margin-top:0">Latest 50 confirmed plays across this WASP server and connected peers · updates every 10 seconds</p>`+
+    (resolved.length?`<div class="grid s">${resolved.map(({event:e,t})=>{
+      const cover=t?albumArt(t):e.cover_url||"",time=new Date(Number(e.played_at)).toLocaleString();
+      const info=`${esc(e.title||"Unknown song")}`;
+      return `<${t?'button':'div'} class="tile sq song" ${t?`data-id="${esc(t.id)}"`:''} title="${esc(time)}">${art(cover,e.album||e.title)}<b>${info}</b><span class="muted">${esc(e.artist||"Unknown artist")}</span><span class="muted">${plural(Number(e.plays)||1,"play")} · ${esc(time)}</span></${t?'button':'div'}>`;
+    }).join("")}</div>`:empty("No listening activity recorded yet."));
+}
+setInterval(()=>{if(parse().a==="listened")refreshRecentListens();},10000);
 // A song with several artists is listed under each of them.
 function artistGrid(el, recent) {
   const by = dict();
@@ -1645,7 +1725,7 @@ audio.addEventListener("timeupdate", () => {
   const t = cur();
   if (t && !counted && audio.currentTime >= 10) {
     counted = true; t.plays++;
-    if(t.origin) fetch("/api/play-peer",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({origin:registeredPeerOrigin(t.origin),remote_id:t.remote_id||String(t.id).split("|").at(-1)})}).catch(()=>{});
+    if(t.origin) fetch("/api/play-peer",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({origin:registeredPeerOrigin(t.origin),remote_id:t.remote_id||String(t.id).split("|").at(-1),title:t.title,artist:artistLine(t),album:albumName(t),cover_url:t.cover_url||""})}).catch(()=>{});
     else fetch("/api/play/" + t.id, { method: "POST" }).catch(() => {});
   }
 });
