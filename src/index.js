@@ -345,9 +345,12 @@ async function rebuildArtistMap(DB) {
   for(const row of results) for(const key of new Set(artistsOfRow(row).map(normArtist).filter(Boolean))) {
     values.push([row.id,key,row.album||""]);
   }
-  // Bound bulk inserts avoid thousands of separate D1 round trips.
-  for(let i=0;i<values.length;i+=35) {
-    const items=values.slice(i,i+35);
+  // Cloudflare D1 permits at most 100 bound parameters per statement.
+  // Each artist mapping has three values; 30 rows = 90 bound parameters.
+  // Use conservative batches to avoid production startup failures.
+  const BATCH_ROWS=30;
+  for(let i=0;i<values.length;i+=BATCH_ROWS) {
+    const items=values.slice(i,i+BATCH_ROWS);
     await DB.prepare(`INSERT OR REPLACE INTO track_artist_map(track_id,artist_key,album) VALUES ${items.map(()=>"(?,?,?)").join(",")}`)
       .bind(...items.flat()).run();
   }
