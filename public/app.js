@@ -1368,11 +1368,13 @@ setInterval(async()=>{
     await loadPeerReactionCounts();
     const e=await fetch("/api/entity-reactions",{cache:"no-store"});
     if(e.ok){const data=await e.json();entity={artist:data.artist||{},playlist:data.playlist||{}};ratedPlaylistCache=arr(data.playlist_meta);}
-    const r=await fetch("/api/tracks",{cache:"no-store"});
+    // v14: a compact, indexed reaction summary instead of downloading and
+    // rebuilding the complete 1,328-track catalogue every 15 seconds.
+    const r=await fetch("/api/track-reaction-counts",{cache:"no-store"});
     if(r.ok){
       const updates=new Map((await r.json()).map(t=>[t.id,t]));
-      for(const t of tracks)if(!t.origin && updates.has(t.id)){
-        const latest=updates.get(t.id);
+      for(const t of tracks)if(!t.origin){
+        const latest=updates.get(t.id)||{};
         for(const field of ["hearts","likes","dislikes"])t[field]=Number(latest[field])||0;
       }
     }

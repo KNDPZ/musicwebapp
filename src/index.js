@@ -32,6 +32,60 @@ const json = (data, status = 200, headers = {}) =>
   });
 const clean = (v, max = 200) => String(v ?? "").trim().slice(0, max);
 
+// v14: only public, session-independent JSON is eligible for shared caching.
+// Cache API entries are regional and expire automatically. Login, account,
+// private playlist, lyric requests, and admin responses are NEVER cached here.
+const PUBLIC_CACHE_TTLS = Object.freeze({
+  "/api/tracks": 90,
+  "/api/playlists": 120,
+  "/api/user-playlists": 60,
+  "/api/site": 120,
+  "/api/entity-reactions": 5,
+  "/api/track-reaction-counts": 5,
+});
+const CACHE_REV = "wasp-v14-1";
+const cacheFor = (req, url) => req.method === "GET" && !url.search && PUBLIC_CACHE_TTLS[url.pathname]
+  ? (typeof caches !== "undefined" && caches.default ? caches.default : null) : null;
+const cachedKey = url => new Request(`${url.origin}${url.pathname}?__wasp_cache=${CACHE_REV}`);
+async function cachedPublicResponse(req, url) {
+  const cache=cacheFor(req,url);
+  if (!cache) return null;
+  try {
+    const hit=await cache.match(cachedKey(url));
+    if (!hit) return null;
+    const h=new Headers(hit.headers);h.set("x-wasp-cache","HIT");
+    return new Response(hit.body,{status:hit.status,headers:h});
+  } catch {return null;}
+}
+async function storePublicResponse(req,url,res,ctx) {
+  const cache=cacheFor(req,url), ttl=PUBLIC_CACHE_TTLS[url.pathname];
+  if (!cache || !ttl || !res.ok || res.headers.has("set-cookie")) return res;
+  const h=new Headers(res.headers);
+  // Browsers must revalidate; Cloudflare's edge can reuse the public JSON.
+  h.set("cache-control",`public, max-age=0, s-maxage=${ttl}`);
+  h.set("x-wasp-cache","MISS");
+  const output=new Response(res.body,{status:res.status,statusText:res.statusText,headers:h});
+  const job=cache.put(cachedKey(url),output.clone()).catch(()=>{});
+  if (ctx?.waitUntil) ctx.waitUntil(job); else await job;
+  return output;
+}
+function invalidatePublicCache(req,url,res,ctx) {
+  if(req.method === "GET" || !res.ok || typeof caches === "undefined" || !caches.default) return;
+  const path=url.pathname;
+  const paths=new Set();
+  if(path === "/api/internal/folder-index" || path.startsWith("/api/admin/tracks/") || path === "/api/admin/upload" || path === "/api/admin/clean") paths.add("/api/tracks");
+  if(path.startsWith("/api/admin/playlists") || path === "/api/admin/clean") paths.add("/api/playlists");
+  if(path.startsWith("/api/user/playlists") || path === "/api/admin/clean") paths.add("/api/user-playlists");
+  if(path === "/api/admin/settings" || path === "/api/admin/favicon") paths.add("/api/site");
+  if(path === "/api/admin/network") {
+    for(const p of Object.keys(PUBLIC_CACHE_TTLS)) paths.add(p);
+  }
+  if(!paths.size) return;
+  const jobs=[...paths].map(p=>caches.default.delete(cachedKey(new URL(p,url.origin))).catch(()=>{}));
+  if(ctx?.waitUntil) ctx.waitUntil(Promise.all(jobs));
+}
+
+
 // CORS for peer network: when sharing is on, public library endpoints are readable by other instances.
 const CORS_PEER = {
   "access-control-allow-origin": "*",
@@ -57,6 +111,40 @@ let ready;
 function init(env) {
   return (ready ??= (async () => {
     const q = (s) => env.DB.prepare(s);
+    // v14: migration work is one-time. A new Worker isolate checks one indexed
+    // settings row instead of trying dozens of CREATE/ALTER statements.
+    try {
+      const marker=await q("SELECT value FROM settings WHERE key = 'wasp_schema_version'").first();
+      if(marker?.value === "14") return;
+    } catch {
+      // New installation with no settings table yet. The next statement is
+      // idempotent; all remaining migration work is done by one lease holder.
+      await q("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL)").run();
+    }
+    // Multiple Cloudflare isolates may start together across data centers.
+    // A D1-backed lease prevents simultaneous backfills and repeated index
+    // builds from multiplying the free-tier writes on initial deployment.
+    const lease=String(Date.now()+90000);
+    let claimed=false;
+    try {
+      const lock=await q(`INSERT INTO settings(key,value) VALUES('wasp_v14_migration_lease',?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value
+        WHERE CAST(settings.value AS INTEGER) < ?`).bind(lease,Date.now()).run();
+      claimed=Number(lock.meta?.changes ?? lock.changes ?? 0)>0;
+      if(!claimed) {
+        for(let attempt=0;attempt<20;attempt++) {
+          await new Promise(resolve=>setTimeout(resolve,500));
+          const marker=await q("SELECT value FROM settings WHERE key = 'wasp_schema_version'").first();
+          if(marker?.value === "14") return;
+        }
+        throw new Error("A WASP database migration is still running. Please retry shortly.");
+      }
+    } catch(e) {throw e;}
+    try {
+    // Another isolate may have completed the migration after our first check
+    // but before this isolate acquired the released lease.
+    const afterLease=await q("SELECT value FROM settings WHERE key = 'wasp_schema_version'").first();
+    if(afterLease?.value === "14") return;
     // Run each statement on its own. D1 batch() is atomic: one failure rolls the whole
     // batch back, so a hiccup on a new table/index during an upgrade used to take the
     // entire site down. Individual try/catch keeps the site up even if one step fails.
@@ -133,6 +221,21 @@ function init(env) {
     // Preserve existing one-way playlist hearts in the unified local charts.
     // Namespaced voters avoid collisions with SHA-256 visitor IDs.
     try { await q("INSERT OR IGNORE INTO entity_reactions(kind,entity,voter,reaction) SELECT 'playlist', playlist_id, 'legacy:' || voter, 'heart' FROM playlist_hearts").run(); } catch {}
+    // v14: materialized artist membership, indexed by exact normalized artist
+    // and album. Built non-destructively from the existing catalogue, preserving
+    // multi-artist collaboration names and existing tracks without rewrites.
+    await q("CREATE TABLE IF NOT EXISTS track_artist_map (track_id TEXT NOT NULL, artist_key TEXT NOT NULL, album TEXT NOT NULL DEFAULT '', PRIMARY KEY(track_id, artist_key))").run();
+    await q("CREATE INDEX IF NOT EXISTS idx_track_artist_lookup ON track_artist_map(artist_key, album)").run();
+    await q("CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks(album)").run();
+    await q("CREATE INDEX IF NOT EXISTS idx_playlist_tracks_playlist_added ON playlist_tracks(playlist_id,added_at)").run();
+    await q("CREATE INDEX IF NOT EXISTS idx_user_playlist_tracks_playlist_added ON user_playlist_tracks(playlist_id,added_at)").run();
+    await rebuildArtistMap(env.DB);
+    // Only set the marker after all essential work succeeds; partial migrations
+    // safely retry on the next cold start rather than hiding a missing index.
+    await q("INSERT INTO settings(key,value) VALUES('wasp_schema_version','14') ON CONFLICT(key) DO UPDATE SET value=excluded.value").run();
+    } finally {
+      if(claimed) await q("DELETE FROM settings WHERE key='wasp_v14_migration_lease' AND value=?").bind(lease).run().catch(()=>{});
+    }
   })().catch((e) => { ready = undefined; throw e; }));
 }
 
@@ -228,11 +331,32 @@ function artistsOfRow(r) {
   if (r.artists) { try { const a = JSON.parse(r.artists); if (Array.isArray(a) && a.length) return a; } catch {} }
   return splitArtists(r.artist);
 }
+function artistIndexStatements(DB, row) {
+  const names=[...new Set(artistsOfRow(row).map(normArtist).filter(Boolean))];
+  const statements=[DB.prepare("DELETE FROM track_artist_map WHERE track_id = ?").bind(row.id)];
+  for(const key of names) statements.push(DB.prepare("INSERT OR REPLACE INTO track_artist_map(track_id,artist_key,album) VALUES (?,?,?)").bind(row.id,key,row.album || ""));
+  return statements;
+}
+async function rebuildArtistMap(DB) {
+  const {results}=await DB.prepare("SELECT id,artist,artists,album FROM tracks").all();
+  // No changes to tracks and no deletions of music/playlist content.
+  await DB.prepare("DELETE FROM track_artist_map").run();
+  const values=[];
+  for(const row of results) for(const key of new Set(artistsOfRow(row).map(normArtist).filter(Boolean))) {
+    values.push([row.id,key,row.album||""]);
+  }
+  // Bound bulk inserts avoid thousands of separate D1 round trips.
+  for(let i=0;i<values.length;i+=35) {
+    const items=values.slice(i,i+35);
+    await DB.prepare(`INSERT OR REPLACE INTO track_artist_map(track_id,artist_key,album) VALUES ${items.map(()=>"(?,?,?)").join(",")}`)
+      .bind(...items.flat()).run();
+  }
+}
 async function libraryHasArtist(DB, name, album = null) {
-  const sql = `SELECT artist, artists FROM tracks WHERE (instr(artist, ?) > 0 OR instr(COALESCE(artists, ''), ?) > 0)${album === null ? "" : " AND album = ?"} LIMIT 200`;
-  const st = DB.prepare(sql);
-  const rows = (await (album === null ? st.bind(name, name) : st.bind(name, name, album)).all()).results;
-  return rows.some((r) => artistsOfRow(r).includes(name));
+  const key=normArtist(name);
+  if(!key) return false;
+  const sql="SELECT 1 FROM track_artist_map WHERE artist_key = ?" + (album===null ? "" : " AND album = ?") + " LIMIT 1";
+  return !!(await (album===null ? DB.prepare(sql).bind(key) : DB.prepare(sql).bind(key,album)).first());
 }
 
 // ---------- artwork ----------
@@ -885,10 +1009,15 @@ async function api(req, env, url, ctx) {
     if (!Array.isArray(body.tracks) || body.tracks.length > 5000) return json({error:"Invalid scan"},400);
     for (const t of body.tracks) {
       if (!/^folder-[a-f0-9]{40}$/.test(t.id)) continue;
-      await DB.prepare("INSERT OR IGNORE INTO tracks (id,title,artist,album,track_no,duration,size,plays,created_at,hash) VALUES (?,?,?,?,?,?,?,0,?,NULL)")
-        .bind(t.id,clean(t.title,200)||"Unknown Track",clean(t.artist,200)||"Unknown Artist",clean(t.album,200)||"Unknown Album",Number(t.track_no)||0,Number(t.duration)||0,Number(t.size)||0,Date.now()).run();
-      await DB.prepare("UPDATE tracks SET title=?,artist=?,album=?,track_no=?,duration=?,size=? WHERE id=?")
-        .bind(clean(t.title,200)||"Unknown Track",clean(t.artist,200)||"Unknown Artist",clean(t.album,200)||"Unknown Album",Number(t.track_no)||0,Number(t.duration)||0,Number(t.size)||0,t.id).run();
+      const track={id:t.id,title:clean(t.title,200)||"Unknown Track",artist:clean(t.artist,200)||"Unknown Artist",
+        album:clean(t.album,200)||"Unknown Album",track_no:Number(t.track_no)||0,duration:Number(t.duration)||0,size:Number(t.size)||0};
+      await DB.batch([
+        DB.prepare("INSERT OR IGNORE INTO tracks (id,title,artist,album,track_no,duration,size,plays,created_at,hash) VALUES (?,?,?,?,?,?,?,0,?,NULL)")
+          .bind(track.id,track.title,track.artist,track.album,track.track_no,track.duration,track.size,Date.now()),
+        DB.prepare("UPDATE tracks SET title=?,artist=?,album=?,track_no=?,duration=?,size=? WHERE id=?")
+          .bind(track.title,track.artist,track.album,track.track_no,track.duration,track.size,track.id),
+        ...artistIndexStatements(DB,track),
+      ]);
     }
     return json({ok:true,indexed:body.tracks.length});
   }
@@ -896,6 +1025,14 @@ async function api(req, env, url, ctx) {
     const { results } = await DB.prepare(
       `SELECT ${TRACK_COLS} FROM tracks t LEFT JOIN reactions r ON r.track_id = t.id GROUP BY t.id ORDER BY t.created_at DESC`).all();
     return json(results.map((t) => { let artists; try { artists = artistsOfRow(t); } catch { artists = [t.artist || "Unknown Artist"]; } return { ...t, artists }; }));
+  }
+  if (path === "/api/track-reaction-counts" && m === "GET") {
+    const {results}=await DB.prepare(`SELECT track_id AS id,
+      COALESCE(SUM(kind='heart'),0) AS hearts,
+      COALESCE(SUM(kind='like'),0) AS likes,
+      COALESCE(SUM(kind='dislike'),0) AS dislikes
+      FROM reactions GROUP BY track_id`).all();
+    return json(results);
   }
   if (path === "/api/playlists" && m === "GET") {
     const pls = (await DB.prepare("SELECT id, name, created_at, cover_v FROM playlists ORDER BY created_at DESC").all()).results;
@@ -1591,6 +1728,7 @@ async function api(req, env, url, ctx) {
       "INSERT INTO tracks (id, title, artist, album, track_no, duration, size, created_at, hash, artists) VALUES (?,?,?,?,?,?,?,?,?,?)")
       .bind(t.id, t.title, t.artist, t.album, t.track_no, t.duration, size, now, hash, JSON.stringify(t.artists))];
     if (pid) stmts.push(DB.prepare("INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, added_at) VALUES (?,?,?)").bind(pid, id, now));
+    stmts.push(...artistIndexStatements(DB,t));
     await DB.batch(stmts);
     await fulfil(env, t).catch(() => {}); // takes matching requests out of the queue
     return json(t, 201);
@@ -1649,6 +1787,7 @@ async function api(req, env, url, ctx) {
       await env.MUSIC.delete([x[1], `art/track/${x[1]}`, `lyrics/${x[1]}`, `lyrics2/${x[1]}`]);
       await DB.batch([
         DB.prepare("DELETE FROM tracks WHERE id = ?").bind(x[1]),
+        DB.prepare("DELETE FROM track_artist_map WHERE track_id = ?").bind(x[1]),
         DB.prepare("DELETE FROM playlist_tracks WHERE track_id = ?").bind(x[1]),
         DB.prepare("DELETE FROM reactions WHERE track_id = ?").bind(x[1]),
       ]);
@@ -1657,8 +1796,11 @@ async function api(req, env, url, ctx) {
     if (m === "PATCH") {
       const b = await req.json().catch(() => ({}));
       const artists = artistsFromInput(b.artist);
-      await DB.prepare("UPDATE tracks SET title = ?, artist = ?, artists = ?, album = ? WHERE id = ?")
-        .bind(clean(b.title) || "Untitled", artists.join(", "), JSON.stringify(artists), clean(b.album), x[1]).run();
+      await DB.batch([
+        DB.prepare("UPDATE tracks SET title = ?, artist = ?, artists = ?, album = ? WHERE id = ?")
+          .bind(clean(b.title) || "Untitled", artists.join(", "), JSON.stringify(artists), clean(b.album), x[1]),
+        ...artistIndexStatements(DB,{id:x[1],artist:artists.join(", "),artists:JSON.stringify(artists),album:clean(b.album)})
+      ]);
       await env.MUSIC.delete([`lyrics/${x[1]}`, `lyrics2/${x[1]}`]);
       await fulfil(env, { title: clean(b.title), artists, album: clean(b.album) }).catch(() => {});
       return json({ ok: true });
@@ -1689,7 +1831,7 @@ async function api(req, env, url, ctx) {
     // partial schema upgrade never blocks the wipe.
     await DB.batch([
       DB.prepare("DELETE FROM playlist_tracks"), DB.prepare("DELETE FROM playlists"),
-      DB.prepare("DELETE FROM reactions"), DB.prepare("DELETE FROM tracks"), DB.prepare("DELETE FROM requests"),
+      DB.prepare("DELETE FROM reactions"), DB.prepare("DELETE FROM tracks"), DB.prepare("DELETE FROM track_artist_map"), DB.prepare("DELETE FROM requests"),
       DB.prepare("DELETE FROM artist_info"), DB.prepare("DELETE FROM artist_similar"),
     ]);
     try { await DB.prepare("DELETE FROM entity_reactions").run(); } catch {}
@@ -1815,6 +1957,8 @@ export default {
     if (env.SPOTIFY_URL) SPOTIFY = env.SPOTIFY_URL;
     if (env.LYRICSOVH_API) OVH = env.LYRICSOVH_API;
     try {
+      const hit=await cachedPublicResponse(req,url);
+      if(hit) return hit;
       await init(env);
       if (!env.DB || !env.MUSIC) {
         return json({ error: "This Worker has no D1 database (DB) or R2 bucket (MUSIC) bound. Enable R2 on the account, then check the Git build log and the Worker bindings." }, 503);
@@ -1841,7 +1985,9 @@ export default {
         const res = await api(req, env, url, ctx);
         // CORS only on public read endpoints (not admin)
         const publicPeer = share && (url.pathname === "/api/tracks" || url.pathname === "/api/playlists" || url.pathname === "/api/user-playlists" || url.pathname === "/api/site" || url.pathname === "/api/peer" || url.pathname === "/api/network/peers");
-        return withCors(res, publicPeer);
+        const output=withCors(res,publicPeer);
+        if(req.method !== "GET") invalidatePublicCache(req,url,output,ctx);
+        return await storePublicResponse(req,url,output,ctx);
       }
     } catch (e) {
       return json({ error: "Server error: " + e.message }, 500);
