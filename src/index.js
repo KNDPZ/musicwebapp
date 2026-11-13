@@ -1,10 +1,11 @@
 import {RELEASE_DOCS} from "./release-docs.js";
+import {extractEmbeddedArt, MAX_ID3_ART_READ, MAX_EMBEDDED_IMAGE} from "./embedded-art.js";
 // Music app Worker: public listening + admin management.
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "15.0.2";
-const BUILD_LABEL = "Federated Library · Sidebar BBCode";
+const BUILD_VERSION = "15.0.3";
+const BUILD_LABEL = "Federated Library · Embedded Artwork Fallback";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -396,8 +397,9 @@ async function libraryHasArtist(DB, name, album = null) {
 }
 
 // ---------- artwork ----------
-// Embedded covers (uploaded by the admin page) win. Otherwise Deezer's public search API (no key) is used
-// and the image is cached in R2. Albums use the album cover, artists the artist photo, singles the track's cover.
+// Artist/album/track artwork prefers existing custom covers, then online Deezer
+// images; a missing/unavailable online result falls back to original MP3 APIC
+// artwork (on R2 or, through Docker gateway, the read-only /music folder).
 const norm = (s) => String(s ?? "").toLowerCase().normalize("NFKD").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 const RETRY_MS = 7 * 24 * 3600 * 1000;
 async function artKey(kind, artist, album = "") {
@@ -424,10 +426,76 @@ async function deezerImage(kind, artist, album, title) {
   return null;
 }
 const noArt = (cache) => new Response(null, { status: 404, headers: { "cache-control": cache } });
+// R2 keeps the original MP3 bytes. This bounded range reader recovers APIC
+// frames from older uploads that never received a separate artwork object.
+// It never rewrites the audio, and deliberately ignores Docker folder IDs:
+// their images are served by the local gateway instead of Cloudflare R2.
+async function r2Bytes(obj, limit) {
+  if (!obj) return null;
+  const bytes = new Uint8Array(await (typeof obj.arrayBuffer === "function"
+    ? obj.arrayBuffer() : new Response(obj.body).arrayBuffer()));
+  return bytes.length <= limit ? bytes : null;
+}
+async function embeddedPictureForTrack(env, id) {
+  if (!/^[\w-]{1,64}$/.test(id) || id.startsWith("folder-")) return null;
+  const key = `art/track/${id}`;
+  const saved = await env.MUSIC.get(key);
+  if (saved && ["embedded", "custom"].includes(saved.customMetadata?.source)) {
+    const bytes = await r2Bytes(saved, MAX_EMBEDDED_IMAGE);
+    if (bytes?.length) return { bytes, type: saved.httpMetadata?.contentType || "image/jpeg" };
+  }
+  // A separate miss marker avoids rereading a coverless MP3 for every album
+  // tile. Older art/track "none" markers are NOT trusted: they predate APIC
+  // extraction and may have hidden a real embedded cover.
+  const missKey = `art/apic-miss/${id}`;
+  const miss = await env.MUSIC.get(missKey);
+  if (miss && Date.now() - Number(miss.customMetadata?.at || 0) < RETRY_MS) return null;
+  const rememberMiss = () => env.MUSIC.put(missKey, "", {customMetadata:{source:"none",at:String(Date.now())}});
+  try {
+    const h = await r2Bytes(await env.MUSIC.get(id, { range: { offset: 0, length: 10 } }), 10);
+    if (!h) return null; // a missing object is not proof that a file lacks art
+    if (h.length < 10 || String.fromCharCode(...h.slice(0, 3)) !== "ID3") {await rememberMiss();return null;}
+    const size = ((h[6]&127)<<21)|((h[7]&127)<<14)|((h[8]&127)<<7)|(h[9]&127);
+    if (size <= 0 || size + 10 > MAX_ID3_ART_READ) {await rememberMiss();return null;}
+    const data = await r2Bytes(await env.MUSIC.get(id, { range: { offset: 0, length: size + 10 } }), size + 10);
+    if (!data) return null;
+    const cover = extractEmbeddedArt(data);
+    if (!cover) {await rememberMiss();return null;}
+    await env.MUSIC.put(key, cover.bytes, {
+      httpMetadata: { contentType: cover.type },
+      customMetadata: { source: "embedded", at: String(Date.now()) },
+    });
+    return cover;
+  } catch (error) {
+    console.warn("Embedded artwork unavailable for track", id, error?.message);
+    return null;
+  }
+}
+async function embeddedFallbackForArt(env, kind, artist, album, id) {
+  const candidates = [];
+  if (kind === "track" && id) candidates.push(id);
+  // The artist map also handles tracks credited to several artists. Limit
+  // each lookup to avoid scanning a whole library on a cache miss.
+  if (artist && !/^unknown/i.test(artist)) {
+    const query = `SELECT t.id FROM track_artist_map a JOIN tracks t ON t.id=a.track_id
+      WHERE a.artist_key = ? ${kind === "artist" ? "" : "AND t.album = ?"}
+      ORDER BY t.created_at DESC LIMIT 16`;
+    const args = kind === "artist" ? [normArtist(artist)] : [normArtist(artist), album];
+    try {
+      const rows = (await env.DB.prepare(query).bind(...args).all()).results;
+      for (const row of rows || []) if (!candidates.includes(row.id)) candidates.push(row.id);
+    } catch (error) { console.warn("Embedded artwork candidates unavailable", error?.message); }
+  }
+  for (const candidate of candidates) {
+    const art = await embeddedPictureForTrack(env, candidate);
+    if (art) return art;
+  }
+  return null;
+}
 async function serveArt(env, url) {
   const kind = url.pathname.slice(5); // album | artist | track | playlist
   const p = url.searchParams;
-  if (kind === "playlist") { // an image the admin chose for a playlist
+  if (kind === "playlist") {
     const id = clean(p.get("id"), 64);
     const obj = /^[\w-]+$/.test(id) ? await env.MUSIC.get(`art/playlist/${id}`) : null;
     if (!obj) return noArt("public, max-age=300");
@@ -436,12 +504,12 @@ async function serveArt(env, url) {
     h.set("cache-control", "public, max-age=86400");
     return new Response(obj.body, { headers: h });
   }
-  let artist, album = "", title = "", key;
+  let artist, album = "", title = "", key, id = "";
   if (kind === "track") {
-    const id = clean(p.get("id"), 64);
-    const t = /^[\w-]+$/.test(id) && await env.DB.prepare("SELECT artist, artists, title FROM tracks WHERE id = ?").bind(id).first();
+    id = clean(p.get("id"), 64);
+    const t = /^[\w-]+$/.test(id) && await env.DB.prepare("SELECT artist, artists, title, album FROM tracks WHERE id = ?").bind(id).first();
     if (!t) return noArt("public, max-age=300");
-    artist = artistsOfRow(t)[0]; title = t.title; key = `art/track/${id}`;
+    artist = artistsOfRow(t)[0]; title = t.title; album = t.album; key = `art/track/${id}`;
   } else {
     artist = clean(p.get(kind === "artist" ? "name" : "artist"));
     album = kind === "album" ? clean(p.get("album")) : "";
@@ -452,25 +520,44 @@ async function serveArt(env, url) {
     key = await artKey(kind, artist, album);
   }
   let obj = await env.MUSIC.get(key);
-  if (obj?.customMetadata?.source === "none" && Date.now() - Number(obj.customMetadata.at) > RETRY_MS) obj = null;
+  const negativeRecent = obj?.customMetadata?.source === "none" && Date.now() - Number(obj.customMetadata.at) <= RETRY_MS;
+  if (obj?.customMetadata?.source === "none") obj = null;
   if (!obj) {
-    let src = null;
-    if (!/^unknown/i.test(artist)) {
-      try { src = await deezerImage(kind, artist, album, title); } catch { return noArt("no-store"); }
+    // Prefer the requested external cover, but ALWAYS attempt original MP3
+    // embedded artwork when the online search is missing or unavailable.
+    let src = null, onlineFailed = false;
+    if (!negativeRecent && !/^unknown/i.test(artist)) {
+      try { src = await deezerImage(kind, artist, album, title); }
+      catch { onlineFailed = true; }
     }
-    if (!src) {
-      await env.MUSIC.put(key, "", { customMetadata: { source: "none", at: String(Date.now()) } });
-      return noArt("public, max-age=300");
+    if (src) {
+      try {
+        const img = await fetch(src);
+        const type = (img.headers.get("content-type") || "").split(";")[0];
+        if (img.ok && /^image\/(jpeg|png|webp)$/.test(type)) {
+          await env.MUSIC.put(key, await img.arrayBuffer(), {
+            httpMetadata: { contentType: type }, customMetadata: { source: "deezer", at: String(Date.now()) },
+          });
+          obj = await env.MUSIC.get(key);
+        } else onlineFailed = true;
+      } catch { onlineFailed = true; }
     }
-    const img = await fetch(src);
-    const type = img.headers.get("content-type") || "";
-    if (!img.ok || !type.startsWith("image/")) return noArt("no-store");
-    await env.MUSIC.put(key, await img.arrayBuffer(), {
-      httpMetadata: { contentType: type }, customMetadata: { source: "deezer", at: String(Date.now()) },
-    });
-    obj = await env.MUSIC.get(key);
+    if (!obj) {
+      const embedded = await embeddedFallbackForArt(env, kind, artist, album, id);
+      if (embedded) {
+        await env.MUSIC.put(key, embedded.bytes, {
+          httpMetadata: { contentType: embedded.type },
+          customMetadata: { source: "embedded", at: String(Date.now()) },
+        });
+        obj = await env.MUSIC.get(key);
+      }
+    }
+    if (!obj) {
+      if (!negativeRecent && !onlineFailed)
+        await env.MUSIC.put(key, "", { customMetadata: { source: "none", at: String(Date.now()) } });
+      return noArt(onlineFailed ? "no-store" : "public, max-age=300");
+    }
   }
-  if (obj.customMetadata?.source === "none") return noArt("public, max-age=300");
   const h = new Headers();
   obj.writeHttpMetadata(h);
   h.set("cache-control", "public, max-age=3600");

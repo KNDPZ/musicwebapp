@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import {parseFile} from 'music-metadata';
 import {proxyToWorker} from './proxy.mjs';
 import {createPeerRelay} from './peer-relay.mjs';
+import {folderFallbackCover} from './folder-art.mjs';
 
 const roots=(process.env.MUSIC_SCAN_PATHS||'/music').split(',').map(x=>x.trim()).filter(Boolean);
 const port=Number(process.env.GATEWAY_PORT||8788), worker='http://127.0.0.1:8787';
@@ -26,8 +27,11 @@ async function walk(root,found){
    const previous=catalogue.get(id);
    if(previous&&previous.mtime===stat.mtimeMs&&previous.size===stat.size){found.set(id,previous);continue;}
    const meta=await parseFile(full,{duration:true,skipCovers:false});
-   const pic=meta.common.picture?.[0];
-   if(pic&&pic.data?.length<5e6)covers.set(id,{data:Buffer.from(pic.data),type:pic.format||'image/jpeg'});
+   const pic=meta.common.picture?.find(p=>p.type==='Cover (front)')||meta.common.picture?.[0];
+   // Replaced files can lose their APIC frame; don't retain an old cover.
+   covers.delete(id);
+   if(pic&&pic.data?.length<5e6&&/^image\/(jpeg|png|webp)$/.test(pic.format||''))
+     covers.set(id,{data:Buffer.from(pic.data),type:pic.format});
    found.set(id,{id,path:full,mtime:stat.mtimeMs,size:stat.size,title:meta.common.title||path.parse(full).name,
     artist:meta.common.artist||meta.common.albumartist||'Unknown Artist',album:meta.common.album||'Unknown Album',
     duration:meta.format.duration||0,track_no:meta.common.track?.no||0});
@@ -123,6 +127,27 @@ async function pollHashRequest(){
     if(request && request!==lastRequestedHash && !hashInProgress){lastRequestedHash=request;void hashScan();}
   }catch{}
 }
+// The Worker cannot read /music (a read-only host mount). If its online
+// artwork search has no match, serve an embedded cover from a matching local
+// folder track. Never change the MP3 or write a new audio file.
+async function serveFolderArtFallback(req,res,u){
+ const kind=u.pathname.slice(5),cover=folderFallbackCover(kind,u.searchParams,catalogue,covers);
+ // Try the online cover first. An external source can be unavailable even
+ // while an embedded cover in /music is perfectly readable.
+ try{
+  const r=await fetch(worker+u.pathname+u.search,{signal:AbortSignal.timeout(15000)});
+  if(r.ok&&/^image\/(jpeg|png|webp)/.test(r.headers.get('content-type')||'')){
+   const bytes=Buffer.from(await r.arrayBuffer());
+   res.writeHead(200,{'content-type':r.headers.get('content-type'),
+     'cache-control':'public, max-age=3600','content-length':bytes.length});
+   res.end(req.method==='HEAD'?undefined:bytes);return;
+  }
+ }catch(error){console.warn('Artwork search unavailable:',error.message);}
+ if(cover){res.writeHead(200,{'content-type':cover.type,
+    'cache-control':'public, max-age=3600','content-length':cover.data.length});
+    res.end(req.method==='HEAD'?undefined:cover.data);return;}
+ res.writeHead(404,{'cache-control':'no-store'});res.end();
+}
 function streamFile(req,res,t){
  let start=0,end=t.size-1;const match=/^bytes=(\d*)-(\d*)$/.exec(req.headers.range||'');
  if(match){start=match[1]?Number(match[1]):0;end=match[2]?Number(match[2]):end;
@@ -143,8 +168,13 @@ const server=http.createServer(async(req,res)=>{
   const t=catalogue.get(u.pathname.slice(7));if(!t){res.writeHead(404);res.end();return;}streamFile(req,res,t);return;
  }
  if(u.pathname==='/art/track'&&u.searchParams.get('id')?.startsWith('folder-')){
-  const cover=covers.get(u.searchParams.get('id'));if(!cover){res.writeHead(404);res.end();return;}
-  res.writeHead(200,{'content-type':cover.type,'cache-control':'public, max-age=3600'});res.end(cover.data);return;
+  const cover=covers.get(u.searchParams.get('id'));
+  if(cover){res.writeHead(200,{'content-type':cover.type,'cache-control':'public, max-age=3600'});
+    res.end(req.method==='HEAD'?undefined:cover.data);return;}
+  // If the file has no embedded cover, let the Worker try its online search.
+ }
+ if((u.pathname==='/art/album'||u.pathname==='/art/artist')&&['GET','HEAD'].includes(req.method)){
+  await serveFolderArtFallback(req,res,u);return;
  }
  try { if (await peerRelay.handle(req,res)) return; }
  catch (error) { console.error('Peer relay error',error.message); if(!res.headersSent)res.writeHead(502);res.end();return; }

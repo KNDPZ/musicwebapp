@@ -16,6 +16,11 @@ You can deploy WASP locally for development, on **Cloudflare Workers**, or on yo
 > Initial admin password: `21232f297a57a5a743894a0e4a801fc3`  
 > Once signed in, open **Admin → Account settings** to change it.
 
+
+### v15.0.3: Embedded artwork fallback
+
+If Deezer has no match for an artist, album, or track cover, WASP tries JPEG/PNG/WebP art embedded in the original MP3 (including existing R2 uploads and Docker read-only `/music` files). Peer song cards can also try embedded artwork through the peer relay. Audio files are never modified; see `docs/V15-0-3-EMBEDDED-ARTWORK-FALLBACK.md` for supported tags and limits.
+
 ## WASP v15.0.2 — BBCode sidebar footer
 
 The Admin **Sidebar credits and branding** editor now accepts a small, safe BBCode subset (text formatting, links, images and colors) instead of arbitrary HTML/JavaScript. A live preview is provided. On the public site, credits use a compact 11px font and stay pinned to the **bottom of the sidebar**, growing upward as lines are added. Existing saved HTML remains in settings for rollback and is safely converted for display/editing until BBCode is saved. See [`docs/V15-0-2-SIDEBAR-BBCODE.md`](docs/V15-0-2-SIDEBAR-BBCODE.md) for tag examples, limitations and deployment notes.

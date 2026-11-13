@@ -140,36 +140,57 @@ paintBoot(3, "Songs, artists and playlists");
 
 const art = (src, label, cls = "") =>
   `<span class="art ${cls}" data-i="${esc((label || "?").trim().charAt(0).toUpperCase())}">${src ? `<img loading="lazy" alt="" src="${esc(src)}">` : ""}</span>`;
-// Try real album/track artwork before leaving an artist with only an initial.
-// Embedded audio covers are served by the Docker gateway's /art/track route.
+// If external album/artist art is missing, walk matching MP3 embedded-cover
+// endpoints before giving up. Peer URLs are kept source-aware so browsers
+// behind a private Tailscale bridge never have to access the peer directly.
 const artworkFallbacks=new WeakMap();
-function trackArtCandidates(t){
+function embeddedTrackUrl(t){
  const id=t.remote_id||t.id;
- const base=t.origin ? resource=>peerResourceUrl(t.origin,resource) : resource=>resource;
- const out=[];
- if(t.cover_url){
-  try {const resolved=new URL(t.cover_url,t.origin||location.origin);
-    if(t.origin && resolved.origin===new URL(t.origin).origin)out.push(peerResourceUrl(t.origin,resolved.pathname+resolved.search));
-    else if(resolved.protocol==="https:")out.push(resolved.href);
-  }catch{}
+ return t.origin ? peerResourceUrl(t.origin,"/art/track?id="+enc(id)+"&artv=15.0.3") : "/art/track?id="+enc(id)+"&artv=15.0.3";
+}
+function validExplicitCover(t){
+ if(!t.cover_url)return "";
+ try{
+  const u=new URL(t.cover_url,t.origin||location.origin);
+  if(t.origin&&u.origin===new URL(t.origin).origin)return peerResourceUrl(t.origin,u.pathname+u.search);
+  return u.protocol==="https:"?u.href:"";
+ }catch{return "";}
+}
+function artworkForMatchingTracks(kind,params,failedUrl){
+ const id=params.get("id"),name=params.get(kind==="artist"?"name":"artist"),album=params.get("album");
+ const candidates=[];
+ const first=kind==="track"?tracks.find(t=>String(t.remote_id||t.id)===id):null;
+ const effectiveArtist=name||(first&&primaryArtist(first));
+ const effectiveAlbum=album||(first&&albumName(first));
+ const matching=tracks.filter(t=>{
+  if(kind==="track"&&String(t.remote_id||t.id)===id)return true;
+  if(!effectiveArtist||!artistsOf(t).some(a=>a.toLowerCase()===String(effectiveArtist).toLowerCase()))return false;
+  return kind==="artist"||!effectiveAlbum||albumName(t).toLowerCase()===String(effectiveAlbum).toLowerCase();
+ });
+ // Prefer same-source album art (when peer and local copies both exist).
+ const failedOrigin=new URL(failedUrl,location.href).origin;
+ matching.sort((a,b)=>{
+  const aSame=new URL(embeddedTrackUrl(a),location.href).origin===failedOrigin;
+  const bSame=new URL(embeddedTrackUrl(b),location.href).origin===failedOrigin;
+  return Number(bSame)-Number(aSame);
+ });
+ for(const t of matching.slice(0,24)){
+  const direct=embeddedTrackUrl(t),explicit=validExplicitCover(t);
+  if(explicit)candidates.push(explicit);
+  candidates.push(direct);
  }
- if(albumName(t))out.push(albumArt(t));
- out.push(base("/art/track?id="+enc(id)));
- return out;
+ return candidates;
 }
 document.addEventListener("error",e=>{
  const img=e.target;if(img.tagName!=="IMG")return;
  let candidates=artworkFallbacks.get(img);
  if(!candidates){
-  const src=new URL(img.src,location.href);
-  if(src.pathname==="/art/artist"||src.pathname.endsWith("/art/artist")){
-   const name=src.searchParams.get("name");
-   candidates=tracks.filter(t=>artistsOf(t).includes(name)).flatMap(trackArtCandidates);
-  }else if(src.pathname==="/art/album"||src.pathname.endsWith("/art/album")){
-   const name=src.searchParams.get("artist"),album=src.searchParams.get("album");
-   candidates=tracks.filter(t=>primaryArtist(t)===name&&albumName(t)===album).flatMap(trackArtCandidates);
-  }else {img.remove();return;}
-  candidates=[...new Set(candidates)].filter(x=>x&&x!==img.src);
+  const src=new URL(img.src,location.href),kind=src.pathname.split("/").at(-1);
+  if(!["artist","album","track"].includes(kind)||!src.pathname.includes("/art/")){
+   img.remove();return;
+  }
+  candidates=artworkForMatchingTracks(kind,src.searchParams,img.src);
+  candidates=[...new Set(candidates)].filter(x=>x&&new URL(x,location.href).href!==img.src);
   artworkFallbacks.set(img,candidates);
  }
  const next=candidates.shift();if(next){img.src=next;return;}
