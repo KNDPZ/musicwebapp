@@ -37,7 +37,7 @@ const call=async (w,path,method='GET',body,headers={}) => {
 let first=await call(worker,'/api/tracks');
 assert.equal(first.res.status,200,JSON.stringify(first.json));
 assert.equal(first.json.length,3);
-assert.equal(sql.prepare("SELECT value FROM settings WHERE key='wasp_schema_version'").get().value,'15');
+assert.equal(sql.prepare("SELECT value FROM settings WHERE key='wasp_schema_version'").get().value,'15.1');
 assert.equal(sql.prepare('SELECT count(*) AS n FROM track_artist_map').get().n,4,'multi-artist backfill preserves all contributors');
 assert.equal(sql.prepare('SELECT artist FROM tracks WHERE id=?').get('t-ac').artist,'AC/DC','migration never rewrites tracks');
 const indexPlan=sql.prepare("EXPLAIN QUERY PLAN SELECT 1 FROM track_artist_map WHERE artist_key='ac dc' LIMIT 1").all();

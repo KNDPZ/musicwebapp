@@ -66,6 +66,14 @@ async function hashScan(){
   hashInProgress=true;
   let scanned=0,changed=0,total=0;
   try {
+    // Don't take a partial catalogue snapshot while folder indexing is still
+    // parsing files at startup. Hashes must refer to a complete folder scan.
+    for(let retries=0;scanning&&retries<120;retries++)
+      await new Promise(resolve=>setTimeout(resolve,500));
+    if(scanning)throw Error('Folder indexing is still running. Please retry the SHA-256 scan.');
+    // Always refresh the folder inventory before a manual or scheduled hash
+    // scan so files removed since the last 5-minute poll cannot count.
+    await scan();
     const saved=new Map();let after='';
     while(true){
       const r=await fetch(worker+'/api/internal/fingerprints?after='+encodeURIComponent(after),{headers:{'x-scanner-secret':secret},signal:AbortSignal.timeout(25000)});
@@ -74,6 +82,13 @@ async function hashScan(){
       if(page.length<500)break;after=page.at(-1).track_id;
     }
     const entries=[...catalogue.values()];total=entries.length;
+    // Stale paths (including files removed before this gateway was restarted)
+    // must not be used as evidence for deleting a managed upload.
+    const missing=[...saved.keys()].filter(id=>!catalogue.has(id));
+    for(let i=0;i<missing.length;i+=80){
+      const r=await fetch(worker+'/api/internal/fingerprint-prune',{method:'POST',headers:scannerHeaders,body:JSON.stringify({ids:missing.slice(i,i+80)}),signal:AbortSignal.timeout(30000)});
+      if(!r.ok)throw Error('Unable to clear stale file fingerprints: '+r.status);
+    }
     await fingerprintBatch([],{state:'running',total,scanned,changed});
     let pending=[];
     for(const t of entries){

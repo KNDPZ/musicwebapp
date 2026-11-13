@@ -110,13 +110,13 @@ try {
   assert.equal(peerCronCalls,2,'monthly day 16 runs at local midnight');
 } finally {globalThis.fetch=realCronFetch;}
 
-assert.equal((await req('/api/admin/version','GET',null,admin)).data.version,'15.0.0');
+assert.equal((await req('/api/admin/version','GET',null,admin)).data.version,'15.0.1');
 assert.equal((await req('/api/internal/cron-tick','POST',null,{'x-scanner-secret':'invalid'})).response.status,403);
 // v14.0.1 -> v14.0.2 fast upgrade must not delete playlist/music.
 sqlite.prepare("UPDATE settings SET value='14' WHERE key='wasp_schema_version'").run();
 const {default:second}=await import('../src/index.js?test=upgrade14.2');
 const secondResponse=await second.fetch(new Request('https://wasp.test/api/playlists'),env,ctx);
 assert.equal(secondResponse.status,200);
-assert.equal(sqlite.prepare("SELECT value FROM settings WHERE key='wasp_schema_version'").get().value,'15');
+assert.equal(sqlite.prepare("SELECT value FROM settings WHERE key='wasp_schema_version'").get().value,'15.1');
 assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM playlists').get().n,1);
 console.log('PASS v14.0.2: catalogue revision, playlist visibility, canonical peer plays, admin-only cron settings, fast non-destructive migration');

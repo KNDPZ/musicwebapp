@@ -5,10 +5,10 @@ from playwright.sync_api import sync_playwright
 P=Path(__file__).resolve().parents[1]/'public'
 css=(P/'style.css').read_text()
 admin=(P/'admin.html').read_text().replace('<link rel="stylesheet" href="/style.css">',f'<style>{css}</style>')
-admin=re.sub(r'<script[^>]*src="/admin.js"[^>]*></script>','',admin)
+admin=re.sub(r'<script[^>]*src="/admin.js(?:\?v=[^"]+)?"[^>]*></script>','',admin)
 admin_js=re.sub(r'^import .*?;\n','',(P/'admin.js').read_text(),flags=re.M)
 front=(P/'index.html').read_text().replace('<head>','<head><base href="https://wasp-demo.invalid/">').replace('<link rel="stylesheet" href="/style.css">',f'<style>{css}</style>')
-front=re.sub(r'<script[^>]*src="/app.js"[^>]*></script>','',front)
+front=re.sub(r'<script[^>]*src="/app.js(?:\?v=[^"]+)?"[^>]*></script>','',front)
 art=(P/'art.js').read_text().replace('export const ','const ').replace('const artistArt =','const _artistArt =').replace('const albumArt =','const _albumArt =')
 radio=(P/'radio.js').read_text().replace('import { artistsOf } from "./art.js";','').replace('export function ','function ').replace('const shuffle =','const radioShuffle =').replace('shuffle(','radioShuffle(')
 app_js=re.sub(r'^import .*?;\n','',(P/'app.js').read_text(),count=2,flags=re.M)

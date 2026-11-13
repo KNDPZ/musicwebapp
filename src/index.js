@@ -3,8 +3,8 @@ import {RELEASE_DOCS} from "./release-docs.js";
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "15.0.0";
-const BUILD_LABEL = "Federated Library & Storage Tools";
+const BUILD_VERSION = "15.0.1";
+const BUILD_LABEL = "Federated Library · Feature Completion";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -121,6 +121,7 @@ function init(env) {
     let marker;
     try {marker=await q("SELECT value FROM settings WHERE key = 'wasp_schema_version'").first();}
     catch {await q("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL)").run();}
+    // v15.0.1 repair: repair both v14.0.3 and installations already marked v15.
     // v15 repair: v14.0.3 incorrectly passed two SQL strings to prepare().
     // The second (peer_catalogue_chunks) was silently discarded, while the
     // schema marker was still advanced. Always repair real tables independently
@@ -134,15 +135,15 @@ function init(env) {
       "CREATE TABLE IF NOT EXISTS file_fingerprints (track_id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0, mtime_ms INTEGER NOT NULL DEFAULT 0, source_path TEXT NOT NULL DEFAULT '', scanned_at INTEGER NOT NULL)",
       "CREATE INDEX IF NOT EXISTS idx_file_fingerprints_hash ON file_fingerprints(sha256)",
     ];
-    if (["14","14.2","14.3"].includes(marker?.value)) {
+    if (["14","14.2","14.3","15"].includes(marker?.value)) {
       for (const sql of additive) await q(sql).run();
       // The older schema also needs the created_at lookup index.
       await q("CREATE INDEX IF NOT EXISTS idx_tracks_created ON tracks(created_at DESC)").run();
       // Advance only after every required DDL operation succeeds.
-      await q("UPDATE settings SET value='15' WHERE key='wasp_schema_version'").run();
+      await q("UPDATE settings SET value='15.1' WHERE key='wasp_schema_version'").run();
       return;
     }
-    if(marker?.value === "15")return;
+    if(marker?.value === "15.1")return;
     // Multiple Cloudflare isolates may start together across data centers.
     // A D1-backed lease prevents simultaneous backfills and repeated index
     // builds from multiplying the free-tier writes on initial deployment.
@@ -157,7 +158,7 @@ function init(env) {
         for(let attempt=0;attempt<20;attempt++) {
           await new Promise(resolve=>setTimeout(resolve,500));
           const marker=await q("SELECT value FROM settings WHERE key = 'wasp_schema_version'").first();
-          if(marker?.value === "15") return;
+          if(marker?.value === "15.1") return;
         }
         throw new Error("A WASP database migration is still running. Please retry shortly.");
       }
@@ -166,7 +167,7 @@ function init(env) {
     // Another isolate may have completed the migration after our first check
     // but before this isolate acquired the released lease.
     const afterLease=await q("SELECT value FROM settings WHERE key = 'wasp_schema_version'").first();
-    if(afterLease?.value === "15") return;
+    if(afterLease?.value === "15.1") return;
     // Run each statement on its own. D1 batch() is atomic: one failure rolls the whole
     // batch back, so a hiccup on a new table/index during an upgrade used to take the
     // entire site down. Individual try/catch keeps the site up even if one step fails.
@@ -261,7 +262,7 @@ function init(env) {
     if(afterLease?.value !== "14") await rebuildArtistMap(env.DB);
     // Only set the marker after all essential work succeeds; partial migrations
     // safely retry on the next cold start rather than hiding a missing index.
-    await q("INSERT INTO settings(key,value) VALUES('wasp_schema_version','15') ON CONFLICT(key) DO UPDATE SET value=excluded.value").run();
+    await q("INSERT INTO settings(key,value) VALUES('wasp_schema_version','15.1') ON CONFLICT(key) DO UPDATE SET value=excluded.value").run();
     } finally {
       if(claimed) await q("DELETE FROM settings WHERE key='wasp_v14_migration_lease' AND value=?").bind(lease).run().catch(()=>{});
     }
@@ -1308,6 +1309,17 @@ async function api(req, env, url, ctx) {
     }
     return json({ok:true,saved:stmts.length});
   }
+  // Reconcile fingerprint metadata with the files currently present under
+  // /music. This only removes stale DB fingerprints, never the source audio
+  // or playlist records. Prevents removed/moved files being counted as
+  // surviving duplicates during a later administrative cleanup.
+  if(path==="/api/internal/fingerprint-prune" && m==="POST"){
+    if(!env.SCANNER_SECRET || req.headers.get("x-scanner-secret")!==env.SCANNER_SECRET)return json({error:"Forbidden"},403);
+    const b=await req.json().catch(()=>({}));
+    if(!Array.isArray(b.ids)||b.ids.length>100||b.ids.some(id=>!/^folder-[a-f0-9]{40}$/.test(id)))return json({error:"Invalid file identifiers"},400);
+    if(b.ids.length)await DB.batch(b.ids.map(id=>DB.prepare("DELETE FROM file_fingerprints WHERE track_id=?").bind(id)));
+    return json({ok:true,removed:b.ids.length});
+  }
   if(path==="/api/internal/hash-request" && m==="GET"){
     if(!env.SCANNER_SECRET || req.headers.get("x-scanner-secret")!==env.SCANNER_SECRET)return json({error:"Forbidden"},403);
     const id=(await DB.prepare("SELECT value FROM settings WHERE key='hash_scan_request'").first())?.value||"";
@@ -2063,8 +2075,14 @@ async function api(req, env, url, ctx) {
     // are no other independently stored uploads with the same hash.
     const alternative=await DB.prepare("SELECT COUNT(*) AS n FROM tracks WHERE hash=? AND id<>?").bind(track.hash,track.id).first();
     if(!alternative?.n){
-      const recent=await DB.prepare("SELECT COUNT(*) AS n FROM file_fingerprints WHERE sha256=? AND scanned_at>?").bind(track.hash,Date.now()-24*3600*1000).first();
-      if(!recent?.n)return json({error:"The other copy is only a stale folder scan. Re-run SHA-256 scanning before deleting an upload."},409);
+      const marker=(await DB.prepare("SELECT value FROM settings WHERE key='fingerprint_status'").first())?.value;
+      let scan;try{scan=JSON.parse(marker||"{}");}catch{scan={};}
+      // Scans reconcile removed/moved paths before writing 'complete'. An old
+      // scan cannot justify deleting the only managed copy of a track.
+      if(scan.state!=="complete" || Date.now()-Number(scan.updated_at||0)>5*60*1000)
+        return json({error:"Complete a fresh SHA-256 scan of /music before deleting an upload that has no second uploaded copy."},409);
+      const surviving=await DB.prepare("SELECT COUNT(*) AS n FROM file_fingerprints WHERE sha256=?").bind(track.hash).first();
+      if(!surviving?.n)return json({error:"The matching /music file was removed or changed. Deletion refused."},409);
     }
     const refs=await DB.prepare("SELECT (SELECT COUNT(*) FROM playlist_tracks WHERE track_id=?)+(SELECT COUNT(*) FROM user_playlist_tracks WHERE track_id=?)+(SELECT COUNT(*) FROM reactions WHERE track_id=?)+(SELECT COUNT(*) FROM user_song_reactions WHERE track_id=?) AS n").bind(track.id,track.id,track.id,track.id).first();
     if(refs.n || Number(track.plays)>0)return json({error:"This upload has plays, reactions or playlist references. Preserve it to avoid losing user data."},409);

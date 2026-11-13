@@ -16,6 +16,10 @@ You can deploy WASP locally for development, on **Cloudflare Workers**, or on yo
 > Initial admin password: `21232f297a57a5a743894a0e4a801fc3`  
 > Once signed in, open **Admin → Account settings** to change it.
 
+## WASP v15.0.1 — Feature completion / deployment verification
+
+v15.0.1 corrects primary-peer preference when a song also exists in local storage, keeps the last synced peer metadata during transient peer failures, prunes stale SHA-256 records without touching `/music`, and repairs an already-marked-v15 database if the peer-chunk table is missing. Browser entrypoints are cache-versioned. **The ZIP does not install itself**: update the GitHub/Portainer source and rebuild Docker, and deploy the Cloudflare Worker separately. Verify the admin version label before troubleshooting a missing feature. See [`docs/V15-0-1-FEATURE-COMPLETION.md`](docs/V15-0-1-FEATURE-COMPLETION.md) for the complete nine-feature activation checklist, data precautions, and limitations.
+
 ## WASP v15 — Federated library and storage management
 
 This version introduces an administrator-selectable **primary peer** (Admin → Network → Connected peers → Treat as local), **SHA-256 duplicate management** (Admin → Duplicate management), an optional **incremental hash cron** (Admin → Network → Crons), **text/image site branding**, configurable **sandboxed sidebar credits**, a simplified **Recently listened** display, and an admin-only **Update documentations** Markdown viewer. The Cloudflare site can present one reachable peer as its local catalogue without downloading that peer's MP3 files; it does **not** automatically migrate R2 audio or make private Tailscale endpoints reachable from Cloudflare.
@@ -59,7 +63,7 @@ This runs the app locally for development. It does not publish your code or musi
    - **Root directory:** the repository root, where `package.json` and `wrangler.jsonc` are located.
    - **Build command:** leave empty.
    - **Deploy command:** `npm run deploy` (regenerates the admin release-notes viewer before deployment).
-   - **Worker name:** match the `name` in `wrangler.jsonc` (initially `music-app`). If you choose a different Worker name, update that configuration before deploying.
+   - **Worker name:** match the `name` in `wrangler.jsonc` (initially `musicwebapp`). If you choose a different Worker name, update that configuration before deploying.
 6. Click **Save and Deploy**. After a successful deployment, open the assigned `workers.dev` URL and verify that the app loads and its R2/D1 bindings have been provisioned correctly.
 7. **Immediately sign in and change the default admin password** before enabling network sharing or publicly promoting the site.
 

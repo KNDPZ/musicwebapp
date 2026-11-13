@@ -208,22 +208,28 @@ async function loadPeers(localIds) {
   const remote = [];
   await Promise.all(peers.map(async (peer) => {
     if (!peer.url) return;
+    const originKey=peer.url.replace(/\/$/,"");
+    const saved=peerSnapshots.get(originKey);
+    // If a reachable peer becomes unavailable, preserve the last metadata-only
+    // snapshot instead of making its local-designated catalogue disappear.
+    // This does not imply the remote audio can play while the peer is offline.
+    const useSaved=(offline=false)=>{
+      if(!saved?.synced_at || !Array.isArray(saved.tracks))return;
+      for(const t of saved.tracks)if(t?.id)remote.push({...t,id:originKey+"|"+t.id,remote_id:t.id,origin:originKey,peer_name:peer.name||peer.url,peer_offline:offline});
+    };
     try {
-      const originKey=peer.url.replace(/\/$/,"");
-      const saved=peerSnapshots.get(originKey);
+      let reachable=true;
       if(saved && saved.synced_at){
         try {
           const r=await fetch((peer.relay_base||peer.url)+"/api/catalog-version",{cache:"no-store",signal:AbortSignal.timeout(4000)});
           if(r.ok){const revision=(await r.json()).revision||"";
             peerRevisionSnapshot.set(originKey,revision);
             if(revision && saved.revision && revision!==saved.revision)stalePeerSnapshots.add(originKey);
-          }
-        }catch{}
+          }else reachable=false;
+        }catch{reachable=false;}
       }
       if(saved && Array.isArray(saved.tracks) && saved.synced_at && !stalePeerSnapshots.has(originKey)){
-        const origin=peer.url.replace(/\/$/,"");
-        for(const t of saved.tracks)if(t?.id)remote.push({...t,id:origin+"|"+t.id,remote_id:t.id,origin,peer_name:peer.name||peer.url});
-        return;
+        useSaved(!reachable);return;
       }
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 10000);
@@ -234,7 +240,7 @@ async function loadPeers(localIds) {
       }catch{}
       const r = await fetch(base + "/api/tracks" + (revision&&revision!=="0" ? "?v="+encodeURIComponent(revision) : ""), { signal: ctrl.signal, headers: { accept: "application/json" } });
       clearTimeout(timer);
-      if (!r.ok) return;
+      if (!r.ok) {useSaved(true);return;}
       const list = arr(await r.json());
       for (const t of list) {
         if (!t || !t.id) continue; // remote IDs are scoped by their origin; local ID collisions are valid
@@ -251,12 +257,21 @@ async function loadPeers(localIds) {
           dislikes: t.dislikes || 0,
         });
       }
-    } catch { /* peer offline — skip silently */ }
+    } catch { useSaved(true); }
   }));
   return remote;
 }
-// Merge catalogue entries only when artist, title and duration agree. Preserve source alternatives.
+// Merge entries when artist/title/duration match. The administrator's
+// explicitly selected primary server MUST win over other copies, including
+// Cloudflare R2, without changing the underlying file or track origin.
 const normalizeRecording = s => String(s||"").normalize("NFKD").replace(/[\u0300-\u036f]/g,"").toLowerCase().replace(/[^a-z0-9]+/g," ").trim();
+function localSourceRank(t) {
+  // Prefer a playable local alternative to an offline snapshot of the primary
+  // peer. A cached entry can still appear as metadata when no other copy exists.
+  if(t.peer_offline)return 0;
+  if (primaryPeerOrigin && t.origin === primaryPeerOrigin) return 3;
+  return t.origin ? 1 : 2;
+}
 function dedupeCatalogue(items) {
   const groups = new Map(), output=[];
   for (const t of items) {
@@ -266,13 +281,11 @@ function dedupeCatalogue(items) {
     const key=artist && title && duration>0 && !version ? `${artist}|${title}|${Math.round(duration/3)}` : `unique:${t.origin||"local"}:${t.id}`;
     const prior=groups.get(key);
     if (!prior) { t.alternates=[]; groups.set(key,t); output.push(t); }
-    else {
-      // Prefer local sources; keep all alternative locations for future failover.
-      if (!prior.origin && t.origin) prior.alternates.push({origin:t.origin,id:t.id});
-      else if (prior.origin && !t.origin) {
-        t.alternates=[{origin:prior.origin,id:prior.id},...(prior.alternates||[])];
-        output[output.indexOf(prior)]=t; groups.set(key,t);
-      } else prior.alternates.push({origin:t.origin||null,id:t.id});
+    else if (localSourceRank(t)>localSourceRank(prior)) {
+      t.alternates=[{origin:prior.origin||null,id:prior.id},...(prior.alternates||[])];
+      output[output.indexOf(prior)]=t;groups.set(key,t);
+    } else {
+      prior.alternates.push({origin:t.origin||null,id:t.id});
     }
   }
   return output;
@@ -334,8 +347,12 @@ async function load() {
         if(saved && saved.synced_at && !stalePeerSnapshots.has(origin)){system=arr(saved.playlists);users=arr(saved.users);}
         else {
           const [a,b]=await Promise.allSettled([fetch(via+"/api/playlists"+v),fetch(via+"/api/user-playlists"+v)]);
-          system=a.status==="fulfilled"&&a.value.ok?arr(await a.value.json()):[];
-          users=b.status==="fulfilled"&&b.value.ok?arr(await b.value.json()):[];
+          const readList=async job=>{
+            if(job.status!=="fulfilled"||!job.value.ok)return null;
+            try{const value=await job.value.json();return Array.isArray(value)?value:null;}catch{return null;}
+          };
+          system=(await readList(a))??arr(saved?.playlists);
+          users=(await readList(b))??arr(saved?.users);
         }
         const lists=[...system.map(p=>({...p,kind:"server"})),...users.map(p=>({...p,kind:"user"}))];
         const mapped=lists.map(p=>({...p,origin,id:origin+"|"+p.id,
@@ -1149,7 +1166,8 @@ function playlistPage(el, id) {
     const p=remote||user;
     const ids=arr(p.tracks).map(i=>{if(!p.origin)return i;const raw=String(i);if(raw.startsWith("peer:"))return raw;const remoteId=raw.startsWith(p.origin+"|")?raw.slice(p.origin.length+1):raw;return byId[p.origin+"|"+remoteId]?p.origin+"|"+remoteId:remoteId;}).filter(i=>byId[i]);
     noView();
-    el.innerHTML=`<a class="back" href="#playlists/${remote?"peer":"users"}">← Playlists</a>${playlistHero(p,ids,remote?(p.origin===primaryPeerOrigin?"Server playlist":"Peer playlist"):"Public user playlist")}${ids.map((i,n)=>row(byId[i],n+1)).join("")||empty("Songs are not available from this server.")}`;
+    const target=remote?(p.origin===primaryPeerOrigin?"server":"peer"):"users";
+    el.innerHTML=`<a class="back" href="#playlists/${target}">← Playlists</a>${playlistHero(p,ids,remote?(p.origin===primaryPeerOrigin?"Server playlist":"Peer playlist"):"Public user playlist")}${ids.map((i,n)=>row(byId[i],n+1)).join("")||empty("Songs are not available from this server.")}`;
     view={ids,label:p.name,pl:p};return;
   }
   const p = playlists.find((x) => x.id === id);

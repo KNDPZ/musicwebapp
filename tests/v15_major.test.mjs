@@ -22,7 +22,7 @@ async function call(w,path,method='GET',data,headers={}){
  return {status:r.status,data:await r.json().catch(()=>null)};
 }
 assert.equal((await call(worker,'/api/tracks')).status,200);
-assert.equal(sqlite.prepare("SELECT value FROM settings WHERE key='wasp_schema_version'").get().value,'15');
+assert.equal(sqlite.prepare("SELECT value FROM settings WHERE key='wasp_schema_version'").get().value,'15.1');
 assert.ok(sqlite.prepare("SELECT name FROM sqlite_master WHERE name='peer_catalogue_chunks'").get());
 const folder='folder-'+'a'.repeat(40),hash='1'.repeat(64),fileid='00112233-4455-6677-8899-aabbccddeeff';
 sqlite.prepare('INSERT INTO tracks(id,title,artist,album,created_at,size) VALUES(?,?,?,?,?,?)').run(folder,'Original folder','Example','',1,123);
@@ -33,7 +33,15 @@ const {default:upgraded}=await import('../src/index.js?upgrade-v15-test');
 assert.equal((await call(upgraded,'/api/tracks')).status,200);
 assert.equal(sqlite.prepare("SELECT name FROM sqlite_master WHERE name='peer_catalogue_chunks'").get()?.name,'peer_catalogue_chunks');
 assert.equal(sqlite.prepare('SELECT COUNT(*) n FROM tracks').get().n,2,'upgrade never removes tracks');
-assert.equal(sqlite.prepare("SELECT value FROM settings WHERE key='wasp_schema_version'").get().value,'15');
+assert.equal(sqlite.prepare("SELECT value FROM settings WHERE key='wasp_schema_version'").get().value,'15.1');
+// A half-upgraded v15 database may also report success while the shard table is
+// missing. The v15.0.1 fix must self-heal it rather than trusting that marker.
+sqlite.exec("DROP TABLE peer_catalogue_chunks; UPDATE settings SET value='15' WHERE key='wasp_schema_version'");
+const {default:repaired15}=await import('../src/index.js?repair-already-marked-v15');
+assert.equal((await call(repaired15,'/api/tracks')).status,200);
+assert.ok(sqlite.prepare("SELECT name FROM sqlite_master WHERE name='peer_catalogue_chunks'").get());
+assert.equal(sqlite.prepare("SELECT value FROM settings WHERE key='wasp_schema_version'").get().value,'15.1');
+assert.equal(sqlite.prepare('SELECT COUNT(*) n FROM tracks').get().n,2);
 const token='v15-admin-token';
 const digest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(token)))).map(x=>x.toString(16).padStart(2,'0')).join('');
 sqlite.prepare('INSERT INTO sessions(token,expires,role) VALUES(?,?,?)').run(digest,Date.now()+200000,'admin');
@@ -76,6 +84,13 @@ assert.equal((await call(upgraded,'/api/admin/duplicates/'+fileid,'DELETE',{conf
 assert.ok(removed.includes(fileid));
 assert.ok(sqlite.prepare('SELECT id FROM tracks WHERE id=?').get(folder));
 assert.equal(sqlite.prepare('SELECT COUNT(*) n FROM tracks').get().n,1);
+// Removing a file from /music clears only stale fingerprint metadata. The
+// original file is never remotely deleted by this Docker scanner endpoint.
+assert.equal((await call(upgraded,'/api/internal/fingerprint-prune','POST',{ids:[folder]},{'x-scanner-secret':'wrong'})).status,403);
+assert.equal((await call(upgraded,'/api/internal/fingerprint-prune','POST',{ids:[folder]},{'x-scanner-secret':'secret'})).status,200);
+assert.equal(sqlite.prepare('SELECT COUNT(*) n FROM file_fingerprints').get().n,0);
+assert.ok(sqlite.prepare('SELECT id FROM tracks WHERE id=?').get(folder));
+assert.ok(!removed.includes(folder));
 const site=await call(upgraded,'/api/admin/settings','PUT',{brand_mode:'image',sidebar_enabled:true,sidebar_html:'<p>Powered by Docker</p>'},admin);
 assert.equal(site.status,200);assert.equal(site.data.brand_mode,'image');assert.equal(site.data.sidebar.enabled,true);
 assert.equal((await call(upgraded,'/api/site')).data.sidebar.html,'<p>Powered by Docker</p>');
