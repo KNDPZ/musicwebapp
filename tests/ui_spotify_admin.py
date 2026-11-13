@@ -10,6 +10,7 @@ html=re.sub(r'<script[^>]*src="/admin\.js"[^>]*></script>', '', html)
 html=html.replace('<link rel="stylesheet" href="/style.css">',f'<style>{(ROOT/"style.css").read_text()}</style>')
 admin_js=re.sub(r'^import .*?;\n','',(ROOT/'admin.js').read_text(),flags=re.M)
 
+bbcode_js=re.sub(r'^export function ', 'function ', (ROOT/'sidebar-bbcode.js').read_text(), flags=re.M)
 with sync_playwright() as pw:
     browser=pw.chromium.launch(headless=True,executable_path='/usr/bin/chromium',args=['--no-sandbox'])
     page=browser.new_page(viewport={'width':1260,'height':830})
@@ -44,7 +45,7 @@ with sync_playwright() as pw:
     page.evaluate('location.hash="#requests/spotify"')
     page.evaluate('window.__calls=[]; window.__saved={client_id:"",secret_configured:false,saved_in_admin:false,source:"none",storage_ready:true,locked:false}')
     page.evaluate('(src)=>(0,eval)(src)',mock_js)
-    page.evaluate('(src)=>(0,eval)(src)',admin_js)
+    page.evaluate('(src)=>(0,eval)(src)',bbcode_js+'\n'+admin_js)
     page.get_by_role('tab',name='Spotify settings').wait_for()
     page.wait_for_function('document.querySelector("#reqTabSpotify").getAttribute("aria-selected")==="true"')
     assert page.locator('#s-requests').is_visible()

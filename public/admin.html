@@ -187,10 +187,13 @@
       </div>
       <div class="card">
         <h2>Sidebar credits and branding</h2>
-        <p class="muted">Optional content in the lower-left sidebar: credits, a powered-by badge, logo, repository link or social links. Content runs in an isolated frame without access to your sign-in session. Blank by default.</p>
-        <label class="check"><input type="checkbox" id="sidebarOn"> Show custom sidebar content</label>
-        <label for="sidebarCode" class="muted">Sidebar code (HTML, CSS and JavaScript)</label>
-        <textarea class="code" id="sidebarCode" spellcheck="false" placeholder="Optional HTML/CSS/JS for credits and links"></textarea>
+        <p class="muted">Optional credits, links or a small logo at the very bottom of the left sidebar. The footer grows upward only as you add content. Use BBCode instead of HTML or JavaScript; blank by default.</p>
+        <label class="check"><input type="checkbox" id="sidebarOn"> Show sidebar credits</label>
+        <label for="sidebarCode" class="muted">Sidebar credits (BBCode)</label>
+        <textarea class="code" id="sidebarCode" spellcheck="false" placeholder="Powered by WASP&#10;[b]Music powered by Docker[/b]&#10;[url=https://github.com/]View our repository[/url]"></textarea>
+        <p class="muted sidebar-help">Supported: <code>[b]bold[/b]</code>, <code>[i]italic[/i]</code>, <code>[u]underline[/u]</code>, <code>[url=https://example.com]link[/url]</code>, <code>[img]https://example.com/logo.png[/img]</code>, <code>[color=#C8F169]text[/color]</code> and <code>[center]text[/center]</code>. Only HTTPS or same-site links/images are accepted. HTML and scripts are never executed.</p>
+        <label class="muted" for="sidebarPreview">Live preview</label>
+        <div class="sidebar-credits-content sidebar-credits-preview" id="sidebarPreview" aria-live="polite"></div>
         <div class="form"><button class="btn" id="sidebarSave" type="button">Save sidebar</button><span class="msg" id="sidebarMsg" role="status"></span></div>
       </div>
       <div class="card">
@@ -342,6 +345,6 @@
     <div class="form" style="justify-content:flex-end"><button class="btn ghost" type="button" id="cCancel">Cancel</button><button class="btn danger solid" id="cGo" type="submit" disabled>Delete everything</button></div>
   </form>
 </dialog>
-<script type="module" src="/admin.js?v=15.0.1"></script>
+<script type="module" src="/admin.js?v=15.0.2"></script>
 </body>
 </html>

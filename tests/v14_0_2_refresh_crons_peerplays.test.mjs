@@ -110,7 +110,7 @@ try {
   assert.equal(peerCronCalls,2,'monthly day 16 runs at local midnight');
 } finally {globalThis.fetch=realCronFetch;}
 
-assert.equal((await req('/api/admin/version','GET',null,admin)).data.version,'15.0.1');
+assert.equal((await req('/api/admin/version','GET',null,admin)).data.version,'15.0.2');
 assert.equal((await req('/api/internal/cron-tick','POST',null,{'x-scanner-secret':'invalid'})).response.status,403);
 // v14.0.1 -> v14.0.2 fast upgrade must not delete playlist/music.
 sqlite.prepare("UPDATE settings SET value='14' WHERE key='wasp_schema_version'").run();

@@ -16,6 +16,10 @@ You can deploy WASP locally for development, on **Cloudflare Workers**, or on yo
 > Initial admin password: `21232f297a57a5a743894a0e4a801fc3`  
 > Once signed in, open **Admin → Account settings** to change it.
 
+## WASP v15.0.2 — BBCode sidebar footer
+
+The Admin **Sidebar credits and branding** editor now accepts a small, safe BBCode subset (text formatting, links, images and colors) instead of arbitrary HTML/JavaScript. A live preview is provided. On the public site, credits use a compact 11px font and stay pinned to the **bottom of the sidebar**, growing upward as lines are added. Existing saved HTML remains in settings for rollback and is safely converted for display/editing until BBCode is saved. See [`docs/V15-0-2-SIDEBAR-BBCODE.md`](docs/V15-0-2-SIDEBAR-BBCODE.md) for tag examples, limitations and deployment notes.
+
 ## WASP v15.0.1 — Feature completion / deployment verification
 
 v15.0.1 corrects primary-peer preference when a song also exists in local storage, keeps the last synced peer metadata during transient peer failures, prunes stale SHA-256 records without touching `/music`, and repairs an already-marked-v15 database if the peer-chunk table is missing. Browser entrypoints are cache-versioned. **The ZIP does not install itself**: update the GitHub/Portainer source and rebuild Docker, and deploy the Cloudflare Worker separately. Verify the admin version label before troubleshooting a missing feature. See [`docs/V15-0-1-FEATURE-COMPLETION.md`](docs/V15-0-1-FEATURE-COMPLETION.md) for the complete nine-feature activation checklist, data precautions, and limitations.

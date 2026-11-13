@@ -1,4 +1,5 @@
 import { radioIds } from "/radio.js";
+import { renderSidebarBBCode, legacySidebarToBBCode } from "/sidebar-bbcode.js";
 import { artistArt as _artistArt, albumArt as _albumArt, albumName, artistsOf, artistLine, primaryArtist, adDoc, AD_SANDBOX } from "/art.js";
 // v13: Docker injects same-origin relay_base in the local peer registry.
 // Cloudflare Workers keep using their existing direct-peer behavior.
@@ -91,21 +92,21 @@ function applySite() {
   document.title = site.title || site.name || "WASP";
   $("#favicon").href = site.favicon ? `/site/favicon?v=${site.favicon}` : "/wasp-icon.png";
 }
-let lastCreditsHtml="";
+let lastCreditsBBCode=null;
 function applySidebarCredits(){
   const target=$("#sidebarCredits");if(!target)return;
   const credits=site.sidebar||{};
-  const source=credits.enabled&&credits.html ? credits.html : "";
+  const source=credits.enabled
+    ? (credits.bbcode!==null && credits.bbcode!==undefined
+        ? String(credits.bbcode) : (credits.html ? legacySidebarToBBCode(credits.html) : "")).trim()
+    : "";
   target.hidden=!source;
-  if(source===lastCreditsHtml)return;
-  lastCreditsHtml=source;
-  target.replaceChildren();
-  if(!source)return;
-  const frame=document.createElement("iframe");
-  frame.title="Site credits";frame.className="sidebar-credits-frame";
-  frame.setAttribute("sandbox",AD_SANDBOX);frame.referrerPolicy="no-referrer";
-  frame.srcdoc=adDoc(source);
-  target.append(frame);
+  if(source===lastCreditsBBCode)return;
+  lastCreditsBBCode=source;
+  if(!source){target.replaceChildren();return;}
+  const block=document.createElement("div");block.className="sidebar-credits-content";
+  renderSidebarBBCode(block,source);
+  target.replaceChildren(block);
 }
 function adSlot() {
   const ad = site.ad;

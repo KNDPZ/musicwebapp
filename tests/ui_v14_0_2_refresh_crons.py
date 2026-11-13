@@ -11,7 +11,8 @@ app_html=(P/'index.html').read_text().replace('<head>','<head><base href="https:
 app_html=re.sub(r'<script[^>]*src="/app.js(?:\?v=[^"]+)?"[^>]*></script>','',app_html)
 art=(P/'art.js').read_text().replace('export const ','const ').replace('const artistArt =','const _artistArt =').replace('const albumArt =','const _albumArt =')
 radio=(P/'radio.js').read_text().replace('import { artistsOf } from "./art.js";','').replace('export function ','function ').replace('const shuffle =','const radioShuffle =').replace('shuffle(','radioShuffle(')
-app_js=re.sub(r'^import .*?;\n','',(P/'app.js').read_text(),count=2,flags=re.M)
+app_js=re.sub(r'^import .*?;\n','',(P/'app.js').read_text(),count=3,flags=re.M)
+bbcode_js=re.sub(r'^export function ', 'function ', (P/'sidebar-bbcode.js').read_text(), flags=re.M)
 with sync_playwright() as pw:
  b=pw.chromium.launch(headless=True,executable_path='/usr/bin/chromium',args=['--no-sandbox'])
  p=b.new_page(viewport={'width':1220,'height':820})
@@ -31,7 +32,7 @@ with sync_playwright() as pw:
   else if(url==='/api/site')data={name:'WASP',title:'WASP',favicon:0,ad:{enabled:false,html:'',height:340}};
   return new Response(JSON.stringify(data),{status:200,headers:{'content-type':'application/json'}});
  };''')
- p.evaluate('(s)=>(0,eval)(s)',admin_script)
+ p.evaluate('(s)=>(0,eval)(s)',bbcode_js+'\n'+admin_script)
  p.get_by_role('tab',name='Crons').wait_for()
  p.wait_for_function('document.querySelector("#cronTimezone").value==="Asia/Manila"')
  assert p.locator('#netCronsPanel').is_visible()

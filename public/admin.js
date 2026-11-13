@@ -1,4 +1,5 @@
 import { readTags } from "/id3.js";
+import { renderSidebarBBCode, legacySidebarToBBCode } from "/sidebar-bbcode.js";
 import { artistArt, albumArt, albumName, artistsOf, artistLine, adDoc, AD_SANDBOX } from "/art.js";
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -463,7 +464,7 @@ async function loadSite() {
   try { site = await (await fetch("/api/site")).json(); } catch { return; }
   $("#siteName").value = site.name; $("#tabTitle").value = site.title; $("#brandIconOn").checked = !!site.show_brand_icon;
   $("#brandMode").value=site.brand_mode||"text";paintBrandImage();
-  $("#sidebarOn").checked=!!site.sidebar?.enabled;$("#sidebarCode").value=site.sidebar?.html||"";
+  $("#sidebarOn").checked=!!site.sidebar?.enabled;$("#sidebarCode").value=site.sidebar?.bbcode!==null && site.sidebar?.bbcode!==undefined ? site.sidebar.bbcode : (site.sidebar?.html ? legacySidebarToBBCode(site.sidebar.html) : "");paintSidebarPreview();
   $("#spOn").checked = site.ad.enabled; $("#spH").value = site.ad.height; $("#spCode").value = site.ad.html;
   document.title = `Admin · ${site.title || site.name}`;
   paintFavicon();
@@ -494,7 +495,12 @@ $("#brandImageRemove").onclick=async()=>{
   const r=await fetch("/api/admin/brand-image",{method:"DELETE"});
   if(r.ok){site.brand_v=0;$("#brandMode").value="text";paintBrandImage();flashMsg("#brandMsg","Image removed. Save branding to switch to text.");}
 };
-$("#sidebarSave").onclick=()=>saveSettings({sidebar_enabled:$("#sidebarOn").checked,sidebar_html:$("#sidebarCode").value},"#sidebarMsg");
+function paintSidebarPreview(){
+  const preview=$("#sidebarPreview");if(!preview)return;
+  renderSidebarBBCode(preview,$("#sidebarCode").value);
+}
+$("#sidebarCode").addEventListener("input",paintSidebarPreview);
+$("#sidebarSave").onclick=()=>saveSettings({sidebar_enabled:$("#sidebarOn").checked,sidebar_bbcode:$("#sidebarCode").value},"#sidebarMsg");
 $("#favBtn").addEventListener("click", () => $("#favFile").click());
 $("#favFile").addEventListener("change", async (e) => {
   const f = e.target.files[0]; e.target.value = ""; if (!f) return;

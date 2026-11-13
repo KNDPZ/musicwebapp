@@ -11,7 +11,8 @@ front=(P/'index.html').read_text().replace('<head>','<head><base href="https://w
 front=re.sub(r'<script[^>]*src="/app.js(?:\?v=[^"]+)?"[^>]*></script>','',front)
 art=(P/'art.js').read_text().replace('export const ','const ').replace('const artistArt =','const _artistArt =').replace('const albumArt =','const _albumArt =')
 radio=(P/'radio.js').read_text().replace('import { artistsOf } from "./art.js";','').replace('export function ','function ').replace('const shuffle =','const radioShuffle =').replace('shuffle(','radioShuffle(')
-app_js=re.sub(r'^import .*?;\n','',(P/'app.js').read_text(),count=2,flags=re.M)
+app_js=re.sub(r'^import .*?;\n','',(P/'app.js').read_text(),count=3,flags=re.M)
+bbcode=re.sub(r'^export function ','function ',(P/'sidebar-bbcode.js').read_text(),flags=re.M)
 with sync_playwright() as pw:
   browser=pw.chromium.launch(headless=True,executable_path='/usr/bin/chromium',args=['--no-sandbox'])
   page=browser.new_page(viewport={'width':1350,'height':900});errors=[]
@@ -34,7 +35,7 @@ with sync_playwright() as pw:
     else data=[];
     return Response.json(data,{status});
   };''')
-  page.evaluate('(s)=>(0,eval)(s)',admin_js)
+  page.evaluate('(s)=>(0,eval)(s)',bbcode+'\n'+admin_js)
   page.locator('input[data-primary="p1"]').wait_for()
   page.locator('input[data-primary="p1"]').check()
   page.get_by_text('Primary peer selected.',exact=False).wait_for()
@@ -44,7 +45,7 @@ with sync_playwright() as pw:
   page.get_by_text('Original /music files are never deleted.',exact=False).wait_for()
   page.evaluate('location.hash="#settings"')
   page.locator('#brandMode').select_option('image')
-  page.locator('#sidebarCode').fill('<p>Credits</p>')
+  page.locator('#sidebarCode').fill('[b]Credits[/b]')
   page.locator('#sidebarOn').check()
   page.locator('#sidebarSave').click()
   page.locator('#sidebarMsg').get_by_text('Saved.').wait_for()
@@ -76,14 +77,14 @@ with sync_playwright() as pw:
     else data=[];
     return Response.json(data,{status});
   };''')
-  f.evaluate('(s)=>(0,eval)(s)',art+'\n'+radio+'\n'+app_js+'\nwindow.__getCatalogue=()=>tracks;window.__reloadCatalogue=()=>load();window.__loading=()=>loadingCatalogue;')
+  f.evaluate('(s)=>(0,eval)(s)',bbcode+'\n'+art+'\n'+radio+'\n'+app_js+'\nwindow.__getCatalogue=()=>tracks;window.__reloadCatalogue=()=>load();window.__loading=()=>loadingCatalogue;')
   f.get_by_text('Remote Server Playlist',exact=True).wait_for(timeout=12000)
   assert f.evaluate('window.__getCatalogue().find(t=>t.title==="Federated track")?.origin')=='https://peer.example', 'primary peer should be preferred over R2 copy'
   f.evaluate('location.hash="#playlist/"+encodeURIComponent("https://peer.example|pl1")')
   assert f.get_by_role('link',name='← Playlists').get_attribute('href')=='#playlists/server', 'primary server playlist should return to local server list'
   f.evaluate('location.hash="#playlists"')
   assert f.locator('#brand .brand-image').get_attribute('src')=='/site/brand?v=42'
-  assert f.locator('#sidebarCredits iframe').count()==1
+  assert f.locator('#sidebarCredits .sidebar-credits-content').count()==1
   # A stale snapshot must still be usable if the peer's newer catalogue cannot
   # be retrieved; no remote audio is copied as part of this fallback.
   f.evaluate('window.__forcePeerOffline=true')

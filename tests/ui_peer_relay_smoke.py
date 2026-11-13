@@ -12,7 +12,7 @@ html=html.replace('<link rel="stylesheet" href="/style.css">',f'<style>{(PUBLIC/
 art=(PUBLIC/'art.js').read_text().replace('export const ','const ').replace('const artistArt =','const _artistArt =').replace('const albumArt =','const _albumArt =')
 radio=(PUBLIC/'radio.js').read_text().replace('import { artistsOf } from "./art.js";','').replace('export function ','function ').replace('const shuffle =','const radioShuffle =').replace('shuffle(','radioShuffle(')
 app=(PUBLIC/'app.js').read_text()
-app=re.sub(r'^import .*?;\n','',app,count=2,flags=re.M)
+app=re.sub(r'^import .*?;\n','',app,count=3,flags=re.M)
 bundle=art+'\n'+radio+'\n'+app
 mock='''
 window.__calls=[];

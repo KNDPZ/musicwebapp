@@ -10,7 +10,7 @@ html=re.sub(r'<script[^>]*src="/app\.js"[^>]*></script>','',html)
 html=html.replace('<link rel="stylesheet" href="/style.css">',f'<style>{(P/"style.css").read_text()}</style>')
 art=(P/'art.js').read_text().replace('export const ','const ').replace('const artistArt =','const _artistArt =').replace('const albumArt =','const _albumArt =')
 radio=(P/'radio.js').read_text().replace('import { artistsOf } from "./art.js";','').replace('export function ','function ').replace('const shuffle =','const radioShuffle =').replace('shuffle(','radioShuffle(')
-app=re.sub(r'^import .*?;\n','',(P/'app.js').read_text(),count=2,flags=re.M)
+app=re.sub(r'^import .*?;\n','',(P/'app.js').read_text(),count=3,flags=re.M)
 bundle=art+'\n'+radio+'\n'+app
 mock='''
 window.__calls=[];

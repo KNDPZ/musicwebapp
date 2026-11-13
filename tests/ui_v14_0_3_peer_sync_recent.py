@@ -11,7 +11,8 @@ front=(P/'index.html').read_text().replace('<head>','<head><base href="https://w
 front=re.sub(r'<script[^>]*src="/app.js(?:\?v=[^"]+)?"[^>]*></script>','',front)
 art=(P/'art.js').read_text().replace('export const ','const ').replace('const artistArt =','const _artistArt =').replace('const albumArt =','const _albumArt =')
 radio=(P/'radio.js').read_text().replace('import { artistsOf } from "./art.js";','').replace('export function ','function ').replace('const shuffle =','const radioShuffle =').replace('shuffle(','radioShuffle(')
-app_js=re.sub(r'^import .*?;\n','',(P/'app.js').read_text(),count=2,flags=re.M)
+app_js=re.sub(r'^import .*?;\n','',(P/'app.js').read_text(),count=3,flags=re.M)
+bbcode_js=re.sub(r'^export function ', 'function ', (P/'sidebar-bbcode.js').read_text(), flags=re.M)
 with sync_playwright() as pw:
  browser=pw.chromium.launch(headless=True,executable_path='/usr/bin/chromium',args=['--no-sandbox'])
  page=browser.new_page(viewport={'width':1280,'height':850});errors=[]
@@ -36,7 +37,7 @@ with sync_playwright() as pw:
   else if(url==='/api/site')data={name:'WASP',title:'WASP',favicon:0,ad:{enabled:false,html:'',height:340}};
   return Response.json(data);
  };''')
- page.evaluate('(script)=>(0,eval)(script)',admin_js)
+ page.evaluate('(script)=>(0,eval)(script)',bbcode_js+'\n'+admin_js)
  page.get_by_role('button',name='Cloud sync metadata').wait_for(timeout=12000)
  page.get_by_role('button',name='Cloud sync metadata').click()
  page.get_by_text('Complete: 1468 songs, 20 server playlists, 4 user playlists.').wait_for()

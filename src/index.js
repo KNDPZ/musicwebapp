@@ -3,8 +3,8 @@ import {RELEASE_DOCS} from "./release-docs.js";
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "15.0.1";
-const BUILD_LABEL = "Federated Library · Feature Completion";
+const BUILD_VERSION = "15.0.2";
+const BUILD_LABEL = "Federated Library · Sidebar BBCode";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -320,7 +320,7 @@ async function siteSettings(DB) {
     show_brand_icon: s.show_brand_icon === "1",
     brand_mode: s.brand_mode === "image" ? "image" : "text",
     brand_v: Number(s.brand_v) || 0,
-    sidebar: {enabled:s.sidebar_enabled==="1",html:s.sidebar_html||""},
+    sidebar: {enabled:s.sidebar_enabled==="1",bbcode:Object.prototype.hasOwnProperty.call(s,"sidebar_bbcode")?s.sidebar_bbcode:null,html:s.sidebar_html||""},
     ad: { enabled: s.ad_enabled === "1", html: s.ad_html || "", height: Number(s.ad_height) || 340 },
   };
 }
@@ -1897,6 +1897,13 @@ async function api(req, env, url, ctx) {
       set("brand_mode",b.brand_mode);
     }
     if ("sidebar_enabled" in b) set("sidebar_enabled",b.sidebar_enabled?"1":"0");
+    if ("sidebar_bbcode" in b) {
+      const code=String(b.sidebar_bbcode??"");
+      if(code.length>8000)return json({error:"Sidebar BBCode exceeds 8,000 characters."},400);
+      set("sidebar_bbcode",code);
+    }
+    // Retained solely for backwards compatibility with installations that
+    // already store HTML credits. New clients only save safe BBCode.
     if ("sidebar_html" in b) {
       const h=String(b.sidebar_html??"");
       if(h.length>25000)return json({error:"Sidebar code exceeds 25,000 characters."},400);
