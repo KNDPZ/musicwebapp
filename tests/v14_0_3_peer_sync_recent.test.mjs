@@ -96,5 +96,5 @@ assert.ok(recent.body.every(e=>e.played_at>0));
 const config=await api('/api/admin/crons','PUT',{timezone:'Asia/Manila',jobs:{peers:{enabled:true,frequency:'daily',time:'02:00',weekday:0,monthday:1,sync_catalogue:true}}},auth);
 assert.equal(config.status,200,JSON.stringify(config.body));
 assert.equal((await api('/api/admin/crons','GET',null,auth)).body.jobs.peers.sync_catalogue,true);
-assert.equal(sqlite.prepare("SELECT value FROM settings WHERE key='wasp_schema_version'").get().value,'14.3');
+assert.equal(sqlite.prepare("SELECT value FROM settings WHERE key='wasp_schema_version'").get().value,'15');
 console.log('PASS: phased admin-only peer sync (no media downloads), metadata snapshot, catalog revision, local + peer recent history, privacy, cron setting');

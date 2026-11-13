@@ -47,6 +47,7 @@ const KEY = { heart: "hearts", like: "likes", dislike: "dislikes" };
 
 let tracks = [], byId = {}, playlists = [], userPublicPlaylists = [], peerPlaylists = [], query = "";
 let peerTrackLookup = new Map();
+let primaryPeerOrigin = "";
 let peerSnapshots = new Map();
 let stalePeerSnapshots = new Set();
 let recentListens = [];
@@ -68,11 +69,15 @@ let vid = store.get("vid", null);
 if (!vid) { vid = makeId(); store.set("vid", vid); }
 
 // ---------- site name, tab title, browser icon, front-page ad (set by the admin) ----------
-let site = { ...store.get("site", { name: "WASP", title: "", favicon: 0, show_brand_icon: false }), ad: { enabled: false, html: "", height: 340 } };
+let site = store.get("site", { name: "WASP", title: "", favicon: 0, show_brand_icon: false, brand_mode:"text", brand_v:0, sidebar:{enabled:false,html:""}, ad: { enabled: false, html: "", height: 340 } });
 const setTip = (sel, text) => { const b = $(sel); b.dataset.tip = text; b.setAttribute("aria-label", text); };
 function applySite() {
   const brand = $("#brand");
   brand.textContent = "";
+  if(site.brand_mode==="image" && site.brand_v){
+    const image=document.createElement("img");image.className="brand-image";image.alt=site.name||"WASP";
+    image.src=`/site/brand?v=${site.brand_v}`;brand.append(image);
+  }else{
   if (site.show_brand_icon) {
     const img = document.createElement("img");
     img.className = "brand-icon";
@@ -81,8 +86,26 @@ function applySite() {
     brand.append(img);
   }
   brand.append(document.createTextNode(site.name || "WASP"));
+  }
+  applySidebarCredits();
   document.title = site.title || site.name || "WASP";
   $("#favicon").href = site.favicon ? `/site/favicon?v=${site.favicon}` : "/wasp-icon.png";
+}
+let lastCreditsHtml="";
+function applySidebarCredits(){
+  const target=$("#sidebarCredits");if(!target)return;
+  const credits=site.sidebar||{};
+  const source=credits.enabled&&credits.html ? credits.html : "";
+  target.hidden=!source;
+  if(source===lastCreditsHtml)return;
+  lastCreditsHtml=source;
+  target.replaceChildren();
+  if(!source)return;
+  const frame=document.createElement("iframe");
+  frame.title="Site credits";frame.className="sidebar-credits-frame";
+  frame.setAttribute("sandbox",AD_SANDBOX);frame.referrerPolicy="no-referrer";
+  frame.srcdoc=adDoc(source);
+  target.append(frame);
 }
 function adSlot() {
   const ad = site.ad;
@@ -181,6 +204,7 @@ async function loadPeers(localIds) {
     if (r.ok) peers = arr(await r.json());
   } catch { return []; }
   peers.forEach(registerPeerRelay);
+  primaryPeerOrigin = peers.find(p=>p.is_primary)?.url?.replace(/\/$/,"") || "";
   const remote = [];
   await Promise.all(peers.map(async (peer) => {
     if (!peer.url) return;
@@ -280,7 +304,7 @@ async function load() {
   try {const r=await fetch(catalogueURL("/api/user-playlists"));if(r.ok)userPublicPlaylists=arr(await r.json());}catch{}
   peerPlaylists=[];
   loadError = t.fail || p.fail || (t.data && !Array.isArray(t.data) ? "/api/tracks returned something unexpected" : "");
-  if (s.data && typeof s.data.name === "string") { site = { ...s.data, ad: s.data.ad || { enabled: false, html: "", height: 340 } }; store.set("site", { name: site.name, title: site.title, favicon: site.favicon, show_brand_icon: site.show_brand_icon }); applySite(); }
+  if (s.data && typeof s.data.name === "string") { site = { ...s.data, ad: s.data.ad || { enabled: false, html: "", height: 340 } }; store.set("site", site); applySite(); }
   paintBoot(90, "Network peers");
   try {
     const cache=await fetch("/api/peer-catalogue",{cache:"no-store"});
@@ -314,8 +338,12 @@ async function load() {
           users=b.status==="fulfilled"&&b.value.ok?arr(await b.value.json()):[];
         }
         const lists=[...system.map(p=>({...p,kind:"server"})),...users.map(p=>({...p,kind:"user"}))];
-        peerPlaylists.push(...lists.map(p=>({...p,origin,id:origin+"|"+p.id,
-          tracks:arr(p.tracks).map(id=>String(id).startsWith("peer:")?id:origin+"|"+id)})));
+        const mapped=lists.map(p=>({...p,origin,id:origin+"|"+p.id,
+          tracks:arr(p.tracks).map(id=>String(id).startsWith("peer:")?id:origin+"|"+id)}));
+        if(origin===primaryPeerOrigin){
+          playlists.push(...mapped.filter(p=>p.kind==="server"));
+          userPublicPlaylists.push(...mapped.filter(p=>p.kind==="user"));
+        }else peerPlaylists.push(...mapped);
       }catch{}
     }));
   }catch{}
@@ -677,9 +705,9 @@ function recentListView(el){
   view={ids:resolved.filter(x=>x.t).map(x=>x.t.id),label:"Recently listened",pl:null};
   el.innerHTML=`<h1>Recently listened</h1><p class="muted" style="margin-top:0">Latest 50 confirmed plays across this WASP server and connected peers · updates every 10 seconds</p>`+
     (resolved.length?`<div class="grid s">${resolved.map(({event:e,t})=>{
-      const cover=t?albumArt(t):e.cover_url||"",time=new Date(Number(e.played_at)).toLocaleString();
+      const cover=t?albumArt(t):e.cover_url||"";
       const info=`${esc(e.title||"Unknown song")}`;
-      return `<${t?'button':'div'} class="tile sq song" ${t?`data-id="${esc(t.id)}"`:''} title="${esc(time)}">${art(cover,e.album||e.title)}<b>${info}</b><span class="muted">${esc(e.artist||"Unknown artist")}</span><span class="muted">${plural(Number(e.plays)||1,"play")} · ${esc(time)}</span></${t?'button':'div'}>`;
+      return `<${t?'button':'div'} class="tile sq song" ${t?`data-id="${esc(t.id)}"`:''} >${art(cover,e.album||e.title)}<b>${info}</b><span class="muted">${esc(e.artist||"Unknown artist")}</span><span class="muted">${plural(Number(e.plays)||1,"play")}</span></${t?'button':'div'}>`;
     }).join("")}</div>`:empty("No listening activity recorded yet."));
 }
 setInterval(()=>{if(parse().a==="listened")refreshRecentListens();},10000);
@@ -769,7 +797,7 @@ function artistAvailability(name) {
   for (const track of catalogue) {
     const matched=artistsOf(track).find(a=>normalizeRecording(a)===wanted);
     if (!matched) continue;
-    if (!track.origin) return {kind:"local", name:matched, origin:null};
+    if (!track.origin || track.origin===primaryPeerOrigin) return {kind:"local", name:matched, origin:track.origin||null};
     if (!peer) peer={kind:"peer",name:matched,origin:track.origin};
   }
   return peer || {kind:"absent",name,origin:null};
@@ -1115,13 +1143,13 @@ function playlistHero(p,ids,subtitle){
  return `<div class="playlist-detail-hero"><div class="playlist-detail-cover">${cover}</div><h1>${esc(p.name)}</h1><p class="muted">${esc(subtitle)}</p><div class="playlist-detail-actions">${playlistReactControls(p)}<button class="btn playlist-copy" data-copy-playlist="${esc(p.id)}" title="Copy playlist to your account" aria-label="Copy playlist">＋ Copy to my playlists</button></div></div>`;
 }
 function playlistPage(el, id) {
-  const remote=peerPlaylists.find(p=>p.id===id) || ratedPlaylistCache.find(p=>p.id===id && p.origin);
+  const remote=peerPlaylists.find(p=>p.id===id) || playlists.find(p=>p.id===id && p.origin) || ratedPlaylistCache.find(p=>p.id===id && p.origin);
   const user=userPublicPlaylists.find(p=>p.id===id) || ratedPlaylistCache.find(p=>p.id===id && p.kind==='user');
   if(remote||user){
     const p=remote||user;
-    const ids=arr(p.tracks).map(i=>{if(!remote)return i;const raw=String(i);if(raw.startsWith("peer:"))return raw;const remoteId=raw.startsWith(p.origin+"|")?raw.slice(p.origin.length+1):raw;return byId[p.origin+"|"+remoteId]?p.origin+"|"+remoteId:remoteId;}).filter(i=>byId[i]);
+    const ids=arr(p.tracks).map(i=>{if(!p.origin)return i;const raw=String(i);if(raw.startsWith("peer:"))return raw;const remoteId=raw.startsWith(p.origin+"|")?raw.slice(p.origin.length+1):raw;return byId[p.origin+"|"+remoteId]?p.origin+"|"+remoteId:remoteId;}).filter(i=>byId[i]);
     noView();
-    el.innerHTML=`<a class="back" href="#playlists/${remote?"peer":"users"}">← Playlists</a>${playlistHero(p,ids,remote?"Peer playlist":"Public user playlist")}${ids.map((i,n)=>row(byId[i],n+1)).join("")||empty("Songs are not available from this server.")}`;
+    el.innerHTML=`<a class="back" href="#playlists/${remote?"peer":"users"}">← Playlists</a>${playlistHero(p,ids,remote?(p.origin===primaryPeerOrigin?"Server playlist":"Peer playlist"):"Public user playlist")}${ids.map((i,n)=>row(byId[i],n+1)).join("")||empty("Songs are not available from this server.")}`;
     view={ids,label:p.name,pl:p};return;
   }
   const p = playlists.find((x) => x.id === id);

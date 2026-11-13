@@ -1,9 +1,10 @@
+import {RELEASE_DOCS} from "./release-docs.js";
 // Music app Worker: public listening + admin management.
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "14.0.3";
-const BUILD_LABEL = "Peer Sync & Recently Listened";
+const BUILD_VERSION = "15.0.0";
+const BUILD_LABEL = "Federated Library & Storage Tools";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -46,7 +47,7 @@ const PUBLIC_CACHE_TTLS = Object.freeze({
   "/api/track-reaction-counts": 5,
   "/api/recent-listens": 10,
 });
-const CACHE_REV = "wasp-v14-2";
+const CACHE_REV = "wasp-v15-0";
 const publicRevision = url => /^[a-f0-9-]{1,40}$/i.test(url.searchParams.get("v") || "") ? url.searchParams.get("v") : "";
 const cacheFor = (req, url) => req.method === "GET" && (!url.search || (url.searchParams.size===1 && !!publicRevision(url))) && PUBLIC_CACHE_TTLS[url.pathname]
   ? (typeof caches !== "undefined" && caches.default ? caches.default : null) : null;
@@ -80,7 +81,7 @@ function invalidatePublicCache(req,url,res,ctx) {
   if(path === "/api/internal/folder-index" || path.startsWith("/api/admin/tracks/") || path === "/api/admin/upload" || path === "/api/admin/clean") paths.add("/api/tracks");
   if(path.startsWith("/api/admin/playlists") || path === "/api/admin/clean") paths.add("/api/playlists");
   if(path.startsWith("/api/user/playlists") || path === "/api/admin/clean") paths.add("/api/user-playlists");
-  if(path === "/api/admin/settings" || path === "/api/admin/favicon") paths.add("/api/site");
+  if(path === "/api/admin/settings" || path === "/api/admin/favicon" || path === "/api/admin/brand-image") paths.add("/api/site");
   if(path === "/api/admin/network") {
     for(const p of Object.keys(PUBLIC_CACHE_TTLS)) paths.add(p);
   }
@@ -120,26 +121,28 @@ function init(env) {
     let marker;
     try {marker=await q("SELECT value FROM settings WHERE key = 'wasp_schema_version'").first();}
     catch {await q("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL)").run();}
-    if(marker?.value === "14.3")return;
-    if(marker?.value === "14.2"){
-      await q("CREATE TABLE IF NOT EXISTS peer_catalogue_cache (peer_id TEXT PRIMARY KEY, tracks TEXT NOT NULL DEFAULT '[]', playlists TEXT NOT NULL DEFAULT '[]', users TEXT NOT NULL DEFAULT '[]', revision TEXT NOT NULL DEFAULT '', synced_at INTEGER NOT NULL DEFAULT 0)",
-      "CREATE TABLE IF NOT EXISTS peer_catalogue_chunks (peer_id TEXT NOT NULL,kind TEXT NOT NULL,shard INTEGER NOT NULL,body TEXT NOT NULL,PRIMARY KEY(peer_id,kind,shard))").run();
-      await q("CREATE TABLE IF NOT EXISTS recent_listens (id TEXT PRIMARY KEY, track_id TEXT NOT NULL, origin TEXT NOT NULL DEFAULT '', remote_id TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', artist TEXT NOT NULL DEFAULT '', album TEXT NOT NULL DEFAULT '', cover_url TEXT NOT NULL DEFAULT '', played_at INTEGER NOT NULL)").run();
-      await q("CREATE INDEX IF NOT EXISTS idx_recent_listens_time ON recent_listens(played_at DESC)").run();
-      await q("UPDATE settings SET value='14.3' WHERE key='wasp_schema_version' AND value='14.2'").run();
-      return;
-    }
-    if(marker?.value === "14"){
-      // Strictly additive upgrade: preserve all v14 tables and artist mappings.
-      await q("CREATE TABLE IF NOT EXISTS peer_listens(origin TEXT NOT NULL,remote_id TEXT NOT NULL,plays INTEGER NOT NULL DEFAULT 0,synced_plays INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(origin,remote_id))").run();
+    // v15 repair: v14.0.3 incorrectly passed two SQL strings to prepare().
+    // The second (peer_catalogue_chunks) was silently discarded, while the
+    // schema marker was still advanced. Always repair real tables independently
+    // even for already-upgraded v14.3 installations; never reset user data.
+    const additive = [
+      "CREATE TABLE IF NOT EXISTS peer_listens(origin TEXT NOT NULL,remote_id TEXT NOT NULL,plays INTEGER NOT NULL DEFAULT 0,synced_plays INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(origin,remote_id))",
+      "CREATE TABLE IF NOT EXISTS peer_catalogue_cache (peer_id TEXT PRIMARY KEY, tracks TEXT NOT NULL DEFAULT '[]', playlists TEXT NOT NULL DEFAULT '[]', users TEXT NOT NULL DEFAULT '[]', revision TEXT NOT NULL DEFAULT '', synced_at INTEGER NOT NULL DEFAULT 0)",
+      "CREATE TABLE IF NOT EXISTS peer_catalogue_chunks (peer_id TEXT NOT NULL,kind TEXT NOT NULL,shard INTEGER NOT NULL,body TEXT NOT NULL,PRIMARY KEY(peer_id,kind,shard))",
+            "CREATE TABLE IF NOT EXISTS recent_listens (id TEXT PRIMARY KEY, track_id TEXT NOT NULL, origin TEXT NOT NULL DEFAULT '', remote_id TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', artist TEXT NOT NULL DEFAULT '', album TEXT NOT NULL DEFAULT '', cover_url TEXT NOT NULL DEFAULT '', played_at INTEGER NOT NULL)",
+      "CREATE INDEX IF NOT EXISTS idx_recent_listens_time ON recent_listens(played_at DESC)",
+      "CREATE TABLE IF NOT EXISTS file_fingerprints (track_id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0, mtime_ms INTEGER NOT NULL DEFAULT 0, source_path TEXT NOT NULL DEFAULT '', scanned_at INTEGER NOT NULL)",
+      "CREATE INDEX IF NOT EXISTS idx_file_fingerprints_hash ON file_fingerprints(sha256)",
+    ];
+    if (["14","14.2","14.3"].includes(marker?.value)) {
+      for (const sql of additive) await q(sql).run();
+      // The older schema also needs the created_at lookup index.
       await q("CREATE INDEX IF NOT EXISTS idx_tracks_created ON tracks(created_at DESC)").run();
-      await q("CREATE TABLE IF NOT EXISTS peer_catalogue_cache (peer_id TEXT PRIMARY KEY, tracks TEXT NOT NULL DEFAULT '[]', playlists TEXT NOT NULL DEFAULT '[]', users TEXT NOT NULL DEFAULT '[]', revision TEXT NOT NULL DEFAULT '', synced_at INTEGER NOT NULL DEFAULT 0)",
-      "CREATE TABLE IF NOT EXISTS peer_catalogue_chunks (peer_id TEXT NOT NULL,kind TEXT NOT NULL,shard INTEGER NOT NULL,body TEXT NOT NULL,PRIMARY KEY(peer_id,kind,shard))").run();
-      await q("CREATE TABLE IF NOT EXISTS recent_listens (id TEXT PRIMARY KEY, track_id TEXT NOT NULL, origin TEXT NOT NULL DEFAULT '', remote_id TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', artist TEXT NOT NULL DEFAULT '', album TEXT NOT NULL DEFAULT '', cover_url TEXT NOT NULL DEFAULT '', played_at INTEGER NOT NULL)").run();
-      await q("CREATE INDEX IF NOT EXISTS idx_recent_listens_time ON recent_listens(played_at DESC)").run();
-      await q("UPDATE settings SET value='14.3' WHERE key='wasp_schema_version' AND value='14'").run();
+      // Advance only after every required DDL operation succeeds.
+      await q("UPDATE settings SET value='15' WHERE key='wasp_schema_version'").run();
       return;
     }
+    if(marker?.value === "15")return;
     // Multiple Cloudflare isolates may start together across data centers.
     // A D1-backed lease prevents simultaneous backfills and repeated index
     // builds from multiplying the free-tier writes on initial deployment.
@@ -154,7 +157,7 @@ function init(env) {
         for(let attempt=0;attempt<20;attempt++) {
           await new Promise(resolve=>setTimeout(resolve,500));
           const marker=await q("SELECT value FROM settings WHERE key = 'wasp_schema_version'").first();
-          if(marker?.value === "14.3") return;
+          if(marker?.value === "15") return;
         }
         throw new Error("A WASP database migration is still running. Please retry shortly.");
       }
@@ -163,7 +166,7 @@ function init(env) {
     // Another isolate may have completed the migration after our first check
     // but before this isolate acquired the released lease.
     const afterLease=await q("SELECT value FROM settings WHERE key = 'wasp_schema_version'").first();
-    if(afterLease?.value === "14.3") return;
+    if(afterLease?.value === "15") return;
     // Run each statement on its own. D1 batch() is atomic: one failure rolls the whole
     // batch back, so a hiccup on a new table/index during an upgrade used to take the
     // entire site down. Individual try/catch keeps the site up even if one step fails.
@@ -178,6 +181,7 @@ function init(env) {
       "CREATE TABLE IF NOT EXISTS peer_listens (origin TEXT NOT NULL, remote_id TEXT NOT NULL, plays INTEGER NOT NULL DEFAULT 0, synced_plays INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(origin,remote_id))",
       "CREATE TABLE IF NOT EXISTS peer_catalogue_cache (peer_id TEXT PRIMARY KEY, tracks TEXT NOT NULL DEFAULT '[]', playlists TEXT NOT NULL DEFAULT '[]', users TEXT NOT NULL DEFAULT '[]', revision TEXT NOT NULL DEFAULT '', synced_at INTEGER NOT NULL DEFAULT 0)",
       "CREATE TABLE IF NOT EXISTS peer_catalogue_chunks (peer_id TEXT NOT NULL,kind TEXT NOT NULL,shard INTEGER NOT NULL,body TEXT NOT NULL,PRIMARY KEY(peer_id,kind,shard))",
+      "CREATE TABLE IF NOT EXISTS file_fingerprints (track_id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0, mtime_ms INTEGER NOT NULL DEFAULT 0, source_path TEXT NOT NULL DEFAULT '', scanned_at INTEGER NOT NULL)",
       "CREATE TABLE IF NOT EXISTS recent_listens (id TEXT PRIMARY KEY, track_id TEXT NOT NULL, origin TEXT NOT NULL DEFAULT '', remote_id TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', artist TEXT NOT NULL DEFAULT '', album TEXT NOT NULL DEFAULT '', cover_url TEXT NOT NULL DEFAULT '', played_at INTEGER NOT NULL)",
       "CREATE TABLE IF NOT EXISTS attempts (ip TEXT NOT NULL, ts INTEGER NOT NULL)",
       `CREATE TABLE IF NOT EXISTS tracks (
@@ -251,12 +255,13 @@ function init(env) {
     await q("CREATE INDEX IF NOT EXISTS idx_track_artist_lookup ON track_artist_map(artist_key, album)").run();
     await q("CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks(album)").run();
     await q("CREATE INDEX IF NOT EXISTS idx_tracks_created ON tracks(created_at DESC)").run();
+    await q("CREATE INDEX IF NOT EXISTS idx_file_fingerprints_hash ON file_fingerprints(sha256)").run();
     await q("CREATE INDEX IF NOT EXISTS idx_playlist_tracks_playlist_added ON playlist_tracks(playlist_id,added_at)").run();
     await q("CREATE INDEX IF NOT EXISTS idx_user_playlist_tracks_playlist_added ON user_playlist_tracks(playlist_id,added_at)").run();
     if(afterLease?.value !== "14") await rebuildArtistMap(env.DB);
     // Only set the marker after all essential work succeeds; partial migrations
     // safely retry on the next cold start rather than hiding a missing index.
-    await q("INSERT INTO settings(key,value) VALUES('wasp_schema_version','14.3') ON CONFLICT(key) DO UPDATE SET value=excluded.value").run();
+    await q("INSERT INTO settings(key,value) VALUES('wasp_schema_version','15') ON CONFLICT(key) DO UPDATE SET value=excluded.value").run();
     } finally {
       if(claimed) await q("DELETE FROM settings WHERE key='wasp_v14_migration_lease' AND value=?").bind(lease).run().catch(()=>{});
     }
@@ -312,6 +317,9 @@ async function siteSettings(DB) {
   return {
     name: s.site_name || "WASP", title: s.tab_title || "", favicon: Number(s.favicon_v) || 0,
     show_brand_icon: s.show_brand_icon === "1",
+    brand_mode: s.brand_mode === "image" ? "image" : "text",
+    brand_v: Number(s.brand_v) || 0,
+    sidebar: {enabled:s.sidebar_enabled==="1",html:s.sidebar_html||""},
     ad: { enabled: s.ad_enabled === "1", html: s.ad_html || "", height: Number(s.ad_height) || 340 },
   };
 }
@@ -1022,7 +1030,7 @@ async function catalogueVersion(DB) {
   return row?.value || "0";
 }
 
-const CRON_TYPES = ["peers","artwork","biography"];
+const CRON_TYPES = ["peers","artwork","biography","hash"];
 const CRON_DEFAULT_JOB = {enabled:false,frequency:"daily",time:"02:00",weekday:0,monthday:1,sync_catalogue:false};
 function cronConfigDefault() {
   return {timezone:"Asia/Manila",jobs:Object.fromEntries(CRON_TYPES.map(x=>[x,{...CRON_DEFAULT_JOB}]))};
@@ -1127,6 +1135,7 @@ async function recordListen(DB,{track_id,origin='',remote_id='',title='',artist=
   if(Math.random()<0.02)await DB.prepare("DELETE FROM recent_listens WHERE id IN (SELECT id FROM recent_listens ORDER BY played_at DESC LIMIT -1 OFFSET 1000)").run();
 }
 async function runCronJob(env,kind){
+  if(kind==="hash")return {queued:!!env.SCANNER_SECRET,local_only:true};
   if(kind==="peers"){
     const rows=(await env.DB.prepare("SELECT id,url,track_count FROM peers ORDER BY added_at LIMIT 60").all()).results;
     let updated=0;
@@ -1228,8 +1237,9 @@ async function api(req, env, url, ctx) {
   // List of peer base URLs this instance has added (so the front-end can pull their tracks).
   if (path === "/api/network/peers" && m === "GET") {
     const rows = (await DB.prepare("SELECT id, url, name, track_count, last_ok, last_error FROM peers ORDER BY added_at").all()).results;
+    const primary=(await DB.prepare("SELECT value FROM settings WHERE key='primary_peer_id'").first())?.value||"";
     return json(rows.map((p) => ({
-      id: p.id, url: p.url, name: p.name || p.url,
+      id: p.id, url: p.url, name: p.name || p.url, is_primary:p.id===primary,
       track_count: p.track_count || 0,
       online: !!(p.last_ok && !p.last_error),
       last_ok: p.last_ok || null,
@@ -1259,6 +1269,7 @@ async function api(req, env, url, ctx) {
     if (!Array.isArray(body.tracks) || body.tracks.length > 5000) return json({error:"Invalid scan"},400);
     for (const t of body.tracks) {
       if (!/^folder-[a-f0-9]{40}$/.test(t.id)) continue;
+      await DB.prepare("DELETE FROM file_fingerprints WHERE track_id=? AND (size<>? OR mtime_ms<>?)").bind(t.id,Number(t.size)||0,Math.floor(Number(t.mtime)||0)).run();
       const track={id:t.id,title:clean(t.title,200)||"Unknown Track",artist:clean(t.artist,200)||"Unknown Artist",
         album:clean(t.album,200)||"Unknown Album",track_no:Number(t.track_no)||0,duration:Number(t.duration)||0,size:Number(t.size)||0};
       await DB.batch([
@@ -1270,6 +1281,37 @@ async function api(req, env, url, ctx) {
       ]);
     }
     return json({ok:true,indexed:body.tracks.length});
+  }
+  // Docker-only scanner API, protected by the per-installation scanner secret.
+  // MP3s are read-only: only their hashes and metadata are stored in D1.
+  if(path==="/api/internal/fingerprints" && m==="GET"){
+    if(!env.SCANNER_SECRET || req.headers.get("x-scanner-secret")!==env.SCANNER_SECRET)return json({error:"Forbidden"},403);
+    const after=clean(url.searchParams.get("after"),100);
+    const rows=(await DB.prepare("SELECT track_id,sha256,size,mtime_ms FROM file_fingerprints WHERE track_id>? ORDER BY track_id LIMIT 500").bind(after).all()).results;
+    return json(rows);
+  }
+  if(path==="/api/internal/fingerprint-index" && m==="POST"){
+    if(!env.SCANNER_SECRET || req.headers.get("x-scanner-secret")!==env.SCANNER_SECRET)return json({error:"Forbidden"},403);
+    const b=await req.json().catch(()=>({}));
+    if(!Array.isArray(b.items)||b.items.length>100)return json({error:"Invalid fingerprint batch"},400);
+    const stmts=[];
+    for(const t of b.items){
+      if(!/^folder-[0-9a-f]{40}$/.test(t.id)||! /^[0-9a-f]{64}$/.test(t.sha256))continue;
+      const path=clean(t.path,1000);
+      stmts.push(DB.prepare("INSERT INTO file_fingerprints(track_id,sha256,size,mtime_ms,source_path,scanned_at) SELECT ?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM tracks WHERE id=?) ON CONFLICT(track_id) DO UPDATE SET sha256=excluded.sha256,size=excluded.size,mtime_ms=excluded.mtime_ms,source_path=excluded.source_path,scanned_at=excluded.scanned_at")
+        .bind(t.id,t.sha256,Math.max(0,Number(t.size)||0),Math.max(0,Math.floor(Number(t.mtime)||0)),path,Date.now(),t.id));
+    }
+    if(stmts.length)await DB.batch(stmts);
+    if(b.status&&typeof b.status==="object"){
+      const state={state:clean(b.status.state,30),total:Number(b.status.total)||0,scanned:Number(b.status.scanned)||0,changed:Number(b.status.changed)||0,updated_at:Date.now(),error:clean(b.status.error,250)};
+      await DB.prepare("INSERT INTO settings(key,value) VALUES('fingerprint_status',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(JSON.stringify(state)).run();
+    }
+    return json({ok:true,saved:stmts.length});
+  }
+  if(path==="/api/internal/hash-request" && m==="GET"){
+    if(!env.SCANNER_SECRET || req.headers.get("x-scanner-secret")!==env.SCANNER_SECRET)return json({error:"Forbidden"},403);
+    const id=(await DB.prepare("SELECT value FROM settings WHERE key='hash_scan_request'").first())?.value||"";
+    return json({request:id});
   }
   if (path === "/api/tracks" && m === "GET") {
     const { results } = await DB.prepare(
@@ -1792,6 +1834,12 @@ async function api(req, env, url, ctx) {
   const sid = auth?.token;
   if (!sid || auth.role !== "admin") return json({ error: "Admin access required." }, 403);
   if(path==="/api/admin/version" && m==="GET") return json({version:BUILD_VERSION,label:BUILD_LABEL},200,{"cache-control":"no-store"});
+  if(path==="/api/admin/docs" && m==="GET") {
+    const name=url.searchParams.get("name");
+    if(!name)return json(RELEASE_DOCS.map(d=>({name:d.name})),200,{"cache-control":"private, no-store"});
+    const doc=RELEASE_DOCS.find(d=>d.name===name);
+    return doc?json(doc,200,{"cache-control":"private, no-store"}):json({error:"Document not found"},404);
+  }
   if(path==="/api/admin/crons" && m==="GET") {
     return json(await getCronConfig(DB),200,{"cache-control":"no-store"});
   }
@@ -1832,6 +1880,16 @@ async function api(req, env, url, ctx) {
     const stmts = [];
     const set = (k, v) => stmts.push(DB.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(k, String(v)));
     if ("site_name" in b) set("site_name", clean(b.site_name, 60) || "WASP");
+    if ("brand_mode" in b) {
+      if(!["text","image"].includes(b.brand_mode))return json({error:"Invalid branding mode"},400);
+      set("brand_mode",b.brand_mode);
+    }
+    if ("sidebar_enabled" in b) set("sidebar_enabled",b.sidebar_enabled?"1":"0");
+    if ("sidebar_html" in b) {
+      const h=String(b.sidebar_html??"");
+      if(h.length>25000)return json({error:"Sidebar code exceeds 25,000 characters."},400);
+      set("sidebar_html",h);
+    }
     if ("show_brand_icon" in b) set("show_brand_icon", b.show_brand_icon ? "1" : "0");
     if ("tab_title" in b) set("tab_title", clean(b.tab_title, 80));
     if ("ad_enabled" in b) set("ad_enabled", b.ad_enabled ? "1" : "0");
@@ -1843,6 +1901,21 @@ async function api(req, env, url, ctx) {
     if ("ad_height" in b) set("ad_height", Math.min(1000, Math.max(60, parseInt(b.ad_height, 10) || 340)));
     if (stmts.length) await DB.batch(stmts);
     return json(await siteSettings(DB));
+  }
+  if (path === "/api/admin/brand-image") {
+    if (m === "PUT") {
+      const type=req.headers.get("content-type")||"",size=Number(req.headers.get("content-length")||0);
+      if(!/^image\/(png|jpeg|webp|gif)$/.test(type)||!size||size>1024*1024)
+        return json({error:"Choose a PNG, JPEG, WebP or GIF up to 1 MB."},400);
+      await env.MUSIC.put("site/brand",req.body,{httpMetadata:{contentType:type}});
+      const v=Date.now();await DB.prepare("INSERT INTO settings(key,value) VALUES('brand_v',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(String(v)).run();
+      return json({ok:true,brand_v:v});
+    }
+    if(m === "DELETE") {
+      await env.MUSIC.delete("site/brand");
+      await DB.prepare("INSERT INTO settings(key,value) VALUES('brand_v','0') ON CONFLICT(key) DO UPDATE SET value='0'").run();
+      return json({ok:true,brand_v:0});
+    }
   }
   if (path === "/api/admin/favicon") {
     if (m === "PUT") {
@@ -1957,9 +2030,52 @@ async function api(req, env, url, ctx) {
       return json({ ok: true });
     }
   }
+  if(path==="/api/admin/hash-scan" && m==="POST") {
+    if(!env.SCANNER_SECRET)return json({error:"The SHA-256 folder scanner is available on Docker installations only."},400);
+    const request=crypto.randomUUID();
+    await DB.prepare("INSERT INTO settings(key,value) VALUES('hash_scan_request',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(request).run();
+    await DB.prepare("INSERT INTO settings(key,value) VALUES('fingerprint_status',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(JSON.stringify({state:"queued",total:0,scanned:0,changed:0,updated_at:Date.now()})).run();
+    return json({ok:true,request});
+  }
+  if(path==="/api/admin/duplicates" && m==="GET") {
+    const status=(await DB.prepare("SELECT value FROM settings WHERE key='fingerprint_status'").first())?.value;
+    // Exact-byte duplicates.  Upload objects and server-folder files are distinct
+    // storage sources; legacy upload hashes are not repeated on folder rows.
+    const cte=`WITH sources AS (
+      SELECT id,hash AS sha,size,'upload' AS source,'' AS source_path FROM tracks WHERE hash IS NOT NULL
+      UNION ALL
+      SELECT f.track_id AS id,f.sha256 AS sha,f.size AS size,'folder' AS source,f.source_path AS source_path FROM file_fingerprints f JOIN tracks t ON t.id=f.track_id
+    ), dup AS (SELECT sha,COUNT(*) AS qty FROM sources GROUP BY sha HAVING COUNT(*)>1)`;
+    const summary=await DB.prepare(cte+" SELECT COALESCE(SUM(qty-1),0) AS duplicates, COUNT(*) AS groups FROM dup").first();
+    const groups=(await DB.prepare(cte+" SELECT d.sha,d.qty,COALESCE(SUM(s.size),0) AS total_bytes FROM dup d JOIN sources s ON s.sha=d.sha GROUP BY d.sha,d.qty ORDER BY d.qty DESC,d.sha LIMIT 100").all()).results;
+    const entries=(await DB.prepare(cte+" SELECT s.id,s.sha,s.size,s.source,s.source_path,t.title,t.artist,t.plays, (SELECT COUNT(*) FROM playlist_tracks p WHERE p.track_id=s.id)+(SELECT COUNT(*) FROM user_playlist_tracks u WHERE u.track_id=s.id) AS references_count FROM sources s JOIN dup d ON s.sha=d.sha LEFT JOIN tracks t ON t.id=s.id ORDER BY s.sha,s.source DESC LIMIT 1000").all()).results;
+    return json({groups:groups.map(g=>({...g,items:entries.filter(e=>e.sha===g.sha)})),duplicate_count:summary?.duplicates||0,duplicate_groups:summary?.groups||0,status:status?JSON.parse(status):{state:"not_run"},note:"Only eligible, unused web-uploaded duplicates can be deleted. /music is mounted read-only."});
+  }
+  if((x=path.match(/^\/api\/admin\/duplicates\/([0-9a-f-]+)$/)) && m==="DELETE") {
+    const b=await req.json().catch(()=>({}));
+    if(b.confirm!=="delete duplicate")return json({error:"Explicit confirmation required."},400);
+    const track=await DB.prepare("SELECT id,hash,size,plays FROM tracks WHERE id=? AND hash IS NOT NULL").bind(x[1]).first();
+    if(!track)return json({error:"Only WASP-managed uploaded files can be deleted here. Original /music files stay read-only."},400);
+    const matches=await DB.prepare("SELECT (SELECT COUNT(*) FROM tracks WHERE hash=?)+(SELECT COUNT(*) FROM file_fingerprints WHERE sha256=?) AS n").bind(track.hash,track.hash).first();
+    if((matches?.n||0)<2)return json({error:"No other identical file is available. Refusing deletion."},409);
+    // A stale folder fingerprint is not sufficient to justify destroying the
+    // only uploaded copy. Require a recently confirmed folder scan if there
+    // are no other independently stored uploads with the same hash.
+    const alternative=await DB.prepare("SELECT COUNT(*) AS n FROM tracks WHERE hash=? AND id<>?").bind(track.hash,track.id).first();
+    if(!alternative?.n){
+      const recent=await DB.prepare("SELECT COUNT(*) AS n FROM file_fingerprints WHERE sha256=? AND scanned_at>?").bind(track.hash,Date.now()-24*3600*1000).first();
+      if(!recent?.n)return json({error:"The other copy is only a stale folder scan. Re-run SHA-256 scanning before deleting an upload."},409);
+    }
+    const refs=await DB.prepare("SELECT (SELECT COUNT(*) FROM playlist_tracks WHERE track_id=?)+(SELECT COUNT(*) FROM user_playlist_tracks WHERE track_id=?)+(SELECT COUNT(*) FROM reactions WHERE track_id=?)+(SELECT COUNT(*) FROM user_song_reactions WHERE track_id=?) AS n").bind(track.id,track.id,track.id,track.id).first();
+    if(refs.n || Number(track.plays)>0)return json({error:"This upload has plays, reactions or playlist references. Preserve it to avoid losing user data."},409);
+    await env.MUSIC.delete(track.id);
+    await DB.batch([DB.prepare("DELETE FROM track_artist_map WHERE track_id=?").bind(track.id),DB.prepare("DELETE FROM tracks WHERE id=? AND hash=?").bind(track.id,track.hash)]);
+    await touchCatalogue(DB);
+    return json({ok:true,deleted_id:track.id});
+  }
   if (path === "/api/admin/check" && m === "POST") {
     const b = await req.json().catch(() => ({}));
-    const row = /^[0-9a-f]{64}$/.test(b.hash) ? await DB.prepare("SELECT id FROM tracks WHERE hash = ?").bind(b.hash).first() : null;
+    const row = /^[0-9a-f]{64}$/.test(b.hash) ? (await DB.prepare("SELECT id FROM tracks WHERE hash = ?").bind(b.hash).first() || await DB.prepare("SELECT track_id AS id FROM file_fingerprints WHERE sha256=? LIMIT 1").bind(b.hash).first()) : null;
     return json({ id: row ? row.id : null });
   }
   if (path === "/api/admin/upload" && m === "POST") {
@@ -1972,7 +2088,7 @@ async function api(req, env, url, ctx) {
     if (!/\.mp3$/i.test(filename)) return json({ error: "Only .mp3 files are allowed." }, 400);
     const hash = req.headers.get("X-Hash") || "";
     if (!/^[0-9a-f]{64}$/.test(hash)) return json({ error: "Missing file fingerprint." }, 400);
-    const dup = await DB.prepare("SELECT id FROM tracks WHERE hash = ?").bind(hash).first();
+    const dup = await DB.prepare("SELECT id FROM tracks WHERE hash = ?").bind(hash).first() || await DB.prepare("SELECT track_id AS id FROM file_fingerprints WHERE sha256=? LIMIT 1").bind(hash).first();
     if (dup) return json({ error: "Already in the library.", id: dup.id }, 409);
     const pid = req.headers.get("X-Playlist");
     if (pid && !(await DB.prepare("SELECT 1 FROM playlists WHERE id = ?").bind(pid).first())) return json({ error: "Playlist not found." }, 400);
@@ -2139,7 +2255,8 @@ async function api(req, env, url, ctx) {
   if (path === "/api/admin/network" && m === "GET") {
     const share = await isSharing(DB);
     const peers = (await DB.prepare("SELECT id, url, name, track_count, last_ok, last_error, added_at FROM peers ORDER BY added_at").all()).results;
-    return json({ share, peers });
+    const primary=(await DB.prepare("SELECT value FROM settings WHERE key='primary_peer_id'").first())?.value||"";
+    return json({ share, primary_peer_id:primary, peers:peers.map(p=>({...p,is_primary:p.id===primary})) });
   }
   if (path === "/api/admin/network" && m === "PUT") {
     const b = await req.json().catch(() => ({}));
@@ -2147,6 +2264,14 @@ async function api(req, env, url, ctx) {
     await DB.prepare("INSERT INTO settings (key, value) VALUES ('network_share', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
       .bind(on ? "1" : "0").run();
     return json({ share: on });
+  }
+  if (path === "/api/admin/network/primary" && m === "PUT") {
+    const b=await req.json().catch(()=>({}));
+    const id=clean(b.peer_id,100);
+    if (id && !(await DB.prepare("SELECT id FROM peers WHERE id=?").bind(id).first())) return json({error:"Peer not found"},404);
+    await DB.prepare("INSERT INTO settings(key,value) VALUES('primary_peer_id',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(id).run();
+    await touchCatalogue(DB);
+    return json({ok:true,primary_peer_id:id});
   }
   if (path === "/api/admin/network/peers" && m === "POST") {
     const b = await req.json().catch(() => ({}));
@@ -2192,6 +2317,8 @@ async function api(req, env, url, ctx) {
     await DB.prepare("DELETE FROM peer_catalogue_chunks WHERE peer_id = ?").bind(x[1]).run();
     await DB.prepare("DELETE FROM peer_catalogue_cache WHERE peer_id = ?").bind(x[1]).run();
     await DB.prepare("DELETE FROM peers WHERE id = ?").bind(x[1]).run();
+    await DB.prepare("UPDATE settings SET value='' WHERE key='primary_peer_id' AND value=?").bind(x[1]).run();
+    await touchCatalogue(DB);
     return json({ ok: true });
   }
   if ((x = path.match(/^\/api\/admin\/network\/peers\/([\w-]+)\/sync$/)) && m === "POST") {
@@ -2263,6 +2390,12 @@ export default {
         if (peerPaths) return new Response(null, { status: 204, headers: CORS_PEER });
       }
       if (url.pathname === "/site/favicon") return withCors(await serveFavicon(env), share);
+      if (url.pathname === "/site/brand") {
+        const obj=await env.MUSIC.get("site/brand");if(!obj)return new Response(null,{status:404});
+        const h=new Headers();obj.writeHttpMetadata(h);
+        h.set("cache-control","public, max-age=86400");h.set("x-content-type-options","nosniff");
+        return withCors(new Response(obj.body,{headers:h}),share);
+      }
       if(url.pathname.startsWith("/art/user-playlist/")){
         const id=url.pathname.slice("/art/user-playlist/".length);
         if(!/^[\w-]+$/.test(id))return new Response("Not found",{status:404});

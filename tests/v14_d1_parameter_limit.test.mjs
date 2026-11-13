@@ -30,7 +30,7 @@ const {default:worker}=await import('../src/index.js?test=d1limit');
 const response=await worker.fetch(new Request('https://wasp.test/api/tracks'),env,{waitUntil(){}});
 assert.equal(response.status,200,await response.text().catch(()=>''));
 assert.equal(sql.prepare('SELECT COUNT(*) AS n FROM track_artist_map').get().n,310);
-assert.equal(sql.prepare("SELECT value FROM settings WHERE key='wasp_schema_version'").get().value,'14.3');
+assert.equal(sql.prepare("SELECT value FROM settings WHERE key='wasp_schema_version'").get().value,'15');
 assert.ok(maxBinds<=100,`exceeded D1 parameter limit: ${maxBinds}`);
 const after=await worker.fetch(new Request('https://wasp.test/api/peer'),env,{waitUntil(){}});
 assert.notEqual(after.status,500, "peer endpoint should not fail from repeated migration");

@@ -16,6 +16,12 @@ You can deploy WASP locally for development, on **Cloudflare Workers**, or on yo
 > Initial admin password: `21232f297a57a5a743894a0e4a801fc3`  
 > Once signed in, open **Admin → Account settings** to change it.
 
+## WASP v15 — Federated library and storage management
+
+This version introduces an administrator-selectable **primary peer** (Admin → Network → Connected peers → Treat as local), **SHA-256 duplicate management** (Admin → Duplicate management), an optional **incremental hash cron** (Admin → Network → Crons), **text/image site branding**, configurable **sandboxed sidebar credits**, a simplified **Recently listened** display, and an admin-only **Update documentations** Markdown viewer. The Cloudflare site can present one reachable peer as its local catalogue without downloading that peer's MP3 files; it does **not** automatically migrate R2 audio or make private Tailscale endpoints reachable from Cloudflare.
+
+The v15 additive migration first repairs the `peer_catalogue_chunks` missing-table defect affecting some existing v14.0.3 installations. **Back up D1, R2 and all Docker volumes, then test on staging before upgrading production.** Never remove application state volumes during a Portainer update. Audio in `/music` remains read-only, and duplicate deletion is manually confirmed and limited to eligible web-uploaded copies with no playlist/reaction/play references. See [`docs/V15-0-0-FEDERATED-LIBRARY.md`](docs/V15-0-0-FEDERATED-LIBRARY.md) for migration checks, implementation limits and deployment testing.
+
 ## Spotify playlist search (optional)
 
 To enable **Request → Playlist → Search**, an administrator can open **Admin → Requests → Spotify settings** and enter their Spotify Developer **Client ID** and **Client Secret**. The password-style field is blank whenever the page loads; leave it blank when updating the Client ID to keep the previously saved secret. The saved secret is AES-GCM encrypted in the installation database, is never sent back to the browser, and is used only by the server for Spotify API access. To undo the admin configuration, select **Remove saved credentials**. If Spotify credentials are also configured as server environment variables, those continue to work when no administrator-saved credentials are present.
@@ -35,6 +41,7 @@ To enable **Request → Playlist → Search**, an administrator can open **Admin
 
    ```bash
    npm install
+   npm run build:docs
    npm run dev
    ```
 
@@ -51,7 +58,7 @@ This runs the app locally for development. It does not publish your code or musi
 5. Configure the Worker build:
    - **Root directory:** the repository root, where `package.json` and `wrangler.jsonc` are located.
    - **Build command:** leave empty.
-   - **Deploy command:** `npx wrangler deploy`.
+   - **Deploy command:** `npm run deploy` (regenerates the admin release-notes viewer before deployment).
    - **Worker name:** match the `name` in `wrangler.jsonc` (initially `music-app`). If you choose a different Worker name, update that configuration before deploying.
 6. Click **Save and Deploy**. After a successful deployment, open the assigned `workers.dev` URL and verify that the app loads and its R2/D1 bindings have been provisioned correctly.
 7. **Immediately sign in and change the default admin password** before enabling network sharing or publicly promoting the site.
@@ -84,7 +91,7 @@ WASP can be hosted independently of Cloudflare, using Docker on a server, NAS, o
 3. Set the **Compose path** to `docker-compose.yml` (relative to the repository root).
 4. Before deployment, use the **Environment variables** section to set the location of your existing music folder, as explained below.
 5. Click **Deploy the stack**. Portainer will retrieve the repository and build/start the Docker container.
-6. By default, open `http://YOUR-SERVER-IP:8080` or `https://YOUR-SERVER-IP:8443`. The default HTTPS configuration uses an internal certificate, so your browser may show a certificate warning until you configure trusted HTTPS.
+6. By default, open `http://YOUR-SERVER-IP:8080` or `https://YOUR-SERVER-IP:8443`. Before publicly using HTTPS, set `SITE_ADDRESS` and `DEFAULT_SNI` in the Portainer stack to your actual public IP or hostname (without protocol/port). `TLS_ARGS=internal` uses an internal certificate that browsers do not automatically trust; use a trusted HTTPS hostname/certificate for production.
 7. **Change the default admin password immediately**. Do not enable peer sharing or publish the server before doing so.
 
 ### 3. Map an existing folder containing music

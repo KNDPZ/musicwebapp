@@ -54,6 +54,60 @@ async function scan(){
   console.log('Scanned',catalogue.size,'server-folder songs; changed',changed.length);
  }catch(e){console.error('Scanner error',e);}finally{scanning=false;}
 }
+const fingerprintsEndpoint=worker+'/api/internal/fingerprint-index';
+const scannerHeaders={'content-type':'application/json','x-scanner-secret':secret};
+let hashInProgress=false,lastRequestedHash='';
+async function fingerprintBatch(items,status){
+  const r=await fetch(fingerprintsEndpoint,{method:'POST',headers:scannerHeaders,body:JSON.stringify({items,status}),signal:AbortSignal.timeout(30000)});
+  if(!r.ok)throw Error('Fingerprint write failed: '+r.status+' '+await r.text());
+}
+async function hashScan(){
+  if(hashInProgress)return;
+  hashInProgress=true;
+  let scanned=0,changed=0,total=0;
+  try {
+    const saved=new Map();let after='';
+    while(true){
+      const r=await fetch(worker+'/api/internal/fingerprints?after='+encodeURIComponent(after),{headers:{'x-scanner-secret':secret},signal:AbortSignal.timeout(25000)});
+      if(!r.ok)throw Error('Unable to read stored fingerprints: '+r.status);
+      const page=await r.json();for(const f of page)saved.set(f.track_id,f);
+      if(page.length<500)break;after=page.at(-1).track_id;
+    }
+    const entries=[...catalogue.values()];total=entries.length;
+    await fingerprintBatch([],{state:'running',total,scanned,changed});
+    let pending=[];
+    for(const t of entries){
+      const prior=saved.get(t.id);
+      if(!prior || prior.size!==t.size || Number(prior.mtime_ms)!==Math.floor(t.mtime)){
+        // Stream the original file; never write, rename or delete it.
+        const digest=await new Promise((resolve,reject)=>{
+          const hash=crypto.createHash('sha256');
+          const stream=fs.createReadStream(t.path,{highWaterMark:1024*1024});
+          stream.on('data',chunk=>hash.update(chunk));
+          stream.on('end',()=>resolve(hash.digest('hex')));
+          stream.on('error',reject);
+        });
+        pending.push({id:t.id,path:t.path,sha256:digest,size:t.size,mtime:Math.floor(t.mtime)});changed++;
+      }
+      scanned++;
+      if(pending.length>=40 || scanned===total){await fingerprintBatch(pending,{state:'running',total,scanned,changed});pending=[];}
+      if(scanned%15===0)await new Promise(resolve=>setTimeout(resolve,20));
+    }
+    await fingerprintBatch([],{state:'complete',total,scanned,changed});
+    console.log('SHA-256 folder scan finished:',scanned,'files,',changed,'new/changed');
+  }catch(error){
+    console.error('SHA-256 folder scan:',error.message);
+    try{await fingerprintBatch([],{state:'error',total,scanned,changed,error:error.message});}catch{}
+  }finally{hashInProgress=false;}
+}
+async function pollHashRequest(){
+  try {
+    const r=await fetch(worker+'/api/internal/hash-request',{headers:{'x-scanner-secret':secret},signal:AbortSignal.timeout(7000)});
+    if(!r.ok)return;
+    const request=(await r.json()).request;
+    if(request && request!==lastRequestedHash && !hashInProgress){lastRequestedHash=request;void hashScan();}
+  }catch{}
+}
 function streamFile(req,res,t){
  let start=0,end=t.size-1;const match=/^bytes=(\d*)-(\d*)$/.exec(req.headers.range||'');
  if(match){start=match[1]?Number(match[1]):0;end=match[2]?Number(match[2]):end;
@@ -65,6 +119,10 @@ function streamFile(req,res,t){
 }
 const server=http.createServer(async(req,res)=>{
  const u=new URL(req.url,'http://localhost');
+ if(u.pathname==='/_internal/hash-scan'&&req.method==='POST'){
+   if(!secret||req.headers['x-scanner-secret']!==secret){res.writeHead(403);res.end();return;}
+   void hashScan();res.writeHead(202,{'content-type':'application/json'});res.end(JSON.stringify({ok:true}));return;
+ }
  if(u.pathname==='/api/local/scan'&&req.method==='POST'){res.writeHead(404);res.end();return;}
  if(u.pathname.startsWith('/audio/folder-')){
   const t=catalogue.get(u.pathname.slice(7));if(!t){res.writeHead(404);res.end();return;}streamFile(req,res,t);return;
@@ -80,3 +138,5 @@ const server=http.createServer(async(req,res)=>{
 });
 server.listen(port,'127.0.0.1',()=>console.log('RiffVault gateway listening on',port));
 setTimeout(scan,7000);setInterval(scan,scanInterval);
+
+setInterval(pollHashRequest,12000);setTimeout(pollHashRequest,16000);

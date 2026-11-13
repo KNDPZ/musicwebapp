@@ -31,6 +31,7 @@
     <nav id="anav" aria-label="Admin sections"></nav>
 
     <div style="margin-top:16px;border-top:1px solid var(--line);padding-top:12px">
+      <a class="nav-item" id="docsNav" href="#docs">Update documentations</a>
       <a class="nav-item" href="/">View site</a>
       <button class="nav-item" id="logout" type="button" style="width:100%;background:none;border:0;font:inherit;font-weight:600;cursor:pointer;text-align:left">Log out</button>
     </div>
@@ -48,6 +49,25 @@
         <input id="songQ" type="search" placeholder="Search songs" style="width:100%;max-width:360px;margin-bottom:12px">
         <div style="overflow-x:auto"><table><thead><tr><th>Title</th><th>Artist</th><th>Album</th><th>Plays</th><th></th></tr></thead><tbody id="rows"></tbody></table></div>
         <nav class="pager" id="pager" aria-label="Song pages"></nav>
+      </div>
+    </section>
+
+    <!-- Storage: SHA-256 duplicate review and safe cleanup -->
+    <section class="pane hidden" id="s-duplicates">
+      <h1>Duplicate management</h1>
+      <div class="card">
+        <h2>SHA-256 folder scan</h2>
+        <p class="muted">Hashes existing /music files read-only and compares them with web uploads. Exact file bytes only; no audio rewriting or renaming. Scheduled scans are configured under Network → Crons.</p>
+        <button class="btn" id="hashScanNow" type="button">Scan music folder now</button>
+        <p class="msg" id="hashScanMsg" role="status"></p>
+        <progress id="hashScanProgress" max="100" value="0" style="width:100%"></progress>
+        <p class="muted" id="hashScanState">Not scanned yet</p>
+      </div>
+      <div class="card">
+        <h2>Exact duplicates <span id="duplicateCount">0</span></h2>
+        <p class="muted">Only identical SHA-256 fingerprints are grouped. Managed web uploads may be eligible for deletion if unreferenced and unplayed. Original /music files are never deleted.</p>
+        <div id="duplicateList">Open this page to review duplicate groups.</div>
+        <p class="msg" id="duplicateMsg" role="status"></p>
       </div>
     </section>
 
@@ -141,6 +161,15 @@
         <div class="form" style="flex-direction:column;align-items:stretch;max-width:520px">
           <label for="siteName" class="muted">Site name (top left of the site)</label>
           <input id="siteName" type="text" maxlength="60" placeholder="WASP">
+          <label for="brandMode" class="muted">Top-left site name format</label>
+          <select id="brandMode"><option value="text">Text</option><option value="image">Custom image</option></select>
+          <div class="form" id="brandImageControls">
+            <img class="favprev hidden" id="brandPreview" alt="Current site name image">
+            <button class="btn ghost" id="brandImageBtn" type="button">Choose site name image</button>
+            <button class="btn ghost" id="brandImageRemove" type="button">Remove image</button>
+            <input id="brandImageFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif" class="hidden">
+          </div>
+          <span class="muted">PNG, JPEG, WebP or GIF, up to 1 MB. This image replaces the top-left text when Image is chosen.</span>
           <label class="brand-icon-toggle" for="brandIconOn"><input id="brandIconOn" type="checkbox"> Show browser icon before site name</label>
           <label for="tabTitle" class="muted">Browser tab name</label>
           <input id="tabTitle" type="text" maxlength="80" placeholder="Same as the site name if empty">
@@ -155,6 +184,14 @@
           <span class="muted">PNG, ICO, SVG, JPEG, WebP or GIF up to 512 KB. Square images look best.</span>
           <div class="form"><button class="btn" id="brandSave" type="button">Save branding</button><span class="msg" id="brandMsg" role="status"></span></div>
         </div>
+      </div>
+      <div class="card">
+        <h2>Sidebar credits and branding</h2>
+        <p class="muted">Optional content in the lower-left sidebar: credits, a powered-by badge, logo, repository link or social links. Content runs in an isolated frame without access to your sign-in session. Blank by default.</p>
+        <label class="check"><input type="checkbox" id="sidebarOn"> Show custom sidebar content</label>
+        <label for="sidebarCode" class="muted">Sidebar code (HTML, CSS and JavaScript)</label>
+        <textarea class="code" id="sidebarCode" spellcheck="false" placeholder="Optional HTML/CSS/JS for credits and links"></textarea>
+        <div class="form"><button class="btn" id="sidebarSave" type="button">Save sidebar</button><span class="msg" id="sidebarMsg" role="status"></span></div>
       </div>
       <div class="card">
         <h2>Advertising</h2>
@@ -245,6 +282,16 @@
           <p class="muted">Daily jobs use a 24-hour time. Weekly jobs run on the chosen weekday at 00:00; monthly jobs run on days 1–30 at 00:00. Months without the selected day skip that month. Enabled jobs are checked every minute, with one execution per scheduled minute.</p>
         </div>
       </div>
+    </section>
+
+    <!-- Admin-only release notes, supplied through authenticated API -->
+    <section class="pane hidden" id="s-docs">
+      <h1>Update documentations</h1>
+      <div class="card"><label for="docsSelect">Select release documentation</label>
+        <select id="docsSelect" style="width:100%;max-width:560px"></select>
+        <p class="msg" id="docsMsg" role="status"></p>
+      </div>
+      <article class="card markdown-view" id="docsBody" aria-label="Release documentation">Choose a release note.</article>
     </section>
 
     <!-- Danger -->

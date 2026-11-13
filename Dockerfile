@@ -8,6 +8,9 @@ COPY package*.json ./
 RUN npm install --omit=optional
 COPY wrangler.local.jsonc wrangler.jsonc ./
 COPY src ./src
+COPY docs ./docs
+COPY scripts ./scripts
+RUN node scripts/build-docs.mjs
 COPY public ./public
 COPY docker ./docker
 RUN mkdir -p /app/.wrangler/state /music /data/uploads && chmod +x /app/docker/start.sh

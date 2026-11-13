@@ -17,15 +17,18 @@ const mini = (src, label) => `<span class="art" data-i="${esc((label || "?").tri
 document.addEventListener("error", (e) => { if (e.target.tagName === "IMG") e.target.remove(); }, true);
 
 // ---------- sections (left menu) ----------
-const PANES = { collection: "Music collection", add: "Add music", playlists: "Playlists", requests: "Requests", settings: "General settings", account: "Account settings", network: "Network", danger: "Danger", users: "Users" };
+const PANES = { collection: "Music collection", duplicates: "Duplicate management", add: "Add music", playlists: "Playlists", requests: "Requests", settings: "General settings", account: "Account settings", network: "Network", danger: "Danger", users: "Users", docs: "Update documentations" };
 function showPane() {
   const route = location.hash.slice(1);
   const section = route.split("/")[0];
   const k = has(PANES, section) ? section : "collection";
-  $("#anav").innerHTML = Object.entries(PANES).map(([id, label]) =>
+  $("#anav").innerHTML = Object.entries(PANES).filter(([id])=>id!=="docs").map(([id, label]) =>
     `<a class="nav-item${id === "danger" ? " dng" : ""}" href="#${id}"${id === k ? ' aria-current="page"' : ""}>${label}</a>`).join("");
   document.querySelectorAll(".pane").forEach((p) => p.classList.toggle("hidden", p.id !== "s-" + k));
+  if (k === "duplicates") loadDuplicates();
   if (k === "users") loadUsers();
+  $("#docsNav").setAttribute("aria-current",k==="docs"?"page":"false");
+  if (k === "docs") loadDocs();
   if (k === "requests") showRequestTab(route === "requests/spotify");
   if (k === "network") showNetworkTab(route === "network/crons");
   window.scrollTo(0, 0);
@@ -345,7 +348,10 @@ function send(file, meta, hash, pid, onProgress) {
     x.send(file);
   });
 }
-const sha = async (file) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", await file.arrayBuffer()))].map((b) => b.toString(16).padStart(2, "0")).join("");
+const sha = async (file) => {
+  if(!globalThis.crypto?.subtle)throw Error('File hashing requires a trusted HTTPS connection (or localhost). Please open WASP using HTTPS with a valid certificate.');
+  return [...new Uint8Array(await crypto.subtle.digest("SHA-256",await file.arrayBuffer()))].map(b=>b.toString(16).padStart(2,"0")).join("");
+};
 
 async function enqueue(fileList) {
   const m = mode(), msg = $("#upMsg");
@@ -456,6 +462,8 @@ function paintFavicon() {
 async function loadSite() {
   try { site = await (await fetch("/api/site")).json(); } catch { return; }
   $("#siteName").value = site.name; $("#tabTitle").value = site.title; $("#brandIconOn").checked = !!site.show_brand_icon;
+  $("#brandMode").value=site.brand_mode||"text";paintBrandImage();
+  $("#sidebarOn").checked=!!site.sidebar?.enabled;$("#sidebarCode").value=site.sidebar?.html||"";
   $("#spOn").checked = site.ad.enabled; $("#spH").value = site.ad.height; $("#spCode").value = site.ad.html;
   document.title = `Admin · ${site.title || site.name}`;
   paintFavicon();
@@ -466,7 +474,27 @@ async function saveSettings(body, msgSel) {
   if (!r.ok) { flashMsg(msgSel, (await r.json().catch(() => ({}))).error || "Couldn't save.", true); return false; }
   site = await r.json(); flashMsg(msgSel, "Saved."); document.title = `Admin · ${site.title || site.name}`; return true;
 }
-$("#brandSave").addEventListener("click", () => saveSettings({ site_name: $("#siteName").value, tab_title: $("#tabTitle").value, show_brand_icon: $("#brandIconOn").checked }, "#brandMsg"));
+function paintBrandImage(){
+  const on=!!site?.brand_v;
+  $("#brandPreview").classList.toggle("hidden",!on);
+  if(on)$("#brandPreview").src=`/site/brand?v=${site.brand_v}`;
+  $("#brandImageRemove").classList.toggle("hidden",!on);
+}
+$("#brandSave").addEventListener("click", () => saveSettings({ site_name: $("#siteName").value, tab_title: $("#tabTitle").value, show_brand_icon: $("#brandIconOn").checked,brand_mode:$("#brandMode").value }, "#brandMsg"));
+$("#brandImageBtn").onclick=()=>$("#brandImageFile").click();
+$("#brandImageFile").onchange=async e=>{
+  const f=e.target.files[0];e.target.value="";if(!f)return;
+  const r=await fetch("/api/admin/brand-image",{method:"PUT",headers:{"content-type":f.type},body:f});
+  const data=await r.json().catch(()=>({}));
+  if(r.ok){site.brand_v=data.brand_v;$("#brandMode").value="image";paintBrandImage();flashMsg("#brandMsg","Image uploaded; click Save branding to activate.");}
+  else flashMsg("#brandMsg",data.error||"Image upload failed",true);
+};
+$("#brandImageRemove").onclick=async()=>{
+  if(!confirm("Remove the site name image?"))return;
+  const r=await fetch("/api/admin/brand-image",{method:"DELETE"});
+  if(r.ok){site.brand_v=0;$("#brandMode").value="text";paintBrandImage();flashMsg("#brandMsg","Image removed. Save branding to switch to text.");}
+};
+$("#sidebarSave").onclick=()=>saveSettings({sidebar_enabled:$("#sidebarOn").checked,sidebar_html:$("#sidebarCode").value},"#sidebarMsg");
 $("#favBtn").addEventListener("click", () => $("#favFile").click());
 $("#favFile").addEventListener("change", async (e) => {
   const f = e.target.files[0]; e.target.value = ""; if (!f) return;
@@ -712,7 +740,7 @@ $("#cleanForm").addEventListener("submit", async (e) => {
 });
 
 // ---------- Network → Crons ----------
-const CRON_LABELS={peers:"Check connected peers for new tracks",artwork:"Fetch missing artist/album artwork",biography:"Check artist biographies and lineups"};
+const CRON_LABELS={peers:"Check connected peers for new tracks",artwork:"Fetch missing artist/album artwork",biography:"Check artist biographies and lineups",hash:"SHA-256 hash local /music folder (Docker only)"};
 const CRON_KEYS=Object.keys(CRON_LABELS);
 const cronWeekdays=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
 const availableZones=()=>{
@@ -777,6 +805,7 @@ async function loadCrons(){
           if(field==="enabled")input.checked=!!job[field];else input.value=String(job[field]);
         }
       }
+      if(key==="peers")cronField(key,"sync_catalogue").checked=!!job.sync_catalogue;
       syncCronFields(key);
     }
     cronsLoaded=true;
@@ -809,6 +838,7 @@ function peerRow(p) {
     ? `<span style="color:var(--accent)">Connected</span> · ${p.track_count || 0} songs`
     : `<span style="color:var(--danger)">Offline</span>${p.last_error ? ` · ${esc(p.last_error)}` : ""}`;
   return `<tr data-peer="${p.id}">
+    <td style="width:46px"><input type="radio" name="primaryPeer" data-primary="${esc(p.id)}" aria-label="Treat ${esc(p.name||p.url)} as local" ${p.is_primary?"checked":""}></td>
     <td><b>${esc(p.name || p.url)}</b><br><span class="muted" style="word-break:break-all">${esc(p.url)}</span><br><span class="muted">${status}</span></td>
     <td style="text-align:right;white-space:nowrap">
       <button class="btn ghost" data-a="sync" title="Sync metadata only; no music files downloaded" aria-label="Cloud sync metadata" ${small}>☁ ↻</button>
@@ -822,7 +852,7 @@ async function loadNetwork() {
     paintNetShare(d.share);
     window.__peers = d.peers || [];
     $("#netPeers").innerHTML = window.__peers.length
-      ? `<table><tbody>${window.__peers.map(peerRow).join("")}</tbody></table>`
+      ? `<p class="muted">Select one peer to treat its catalogue as local, without downloading its audio. <label><input type="radio" name="primaryPeer" data-primary="" ${!d.primary_peer_id?"checked":""}> None</label></p><table><tbody>${window.__peers.map(peerRow).join("")}</tbody></table>`
       : "No peers yet.";
   } catch {
     $("#netPeers").textContent = "Could not load network settings.";
@@ -871,6 +901,15 @@ $("#netConnect").addEventListener("click", async () => {
   $("#netAddForm").classList.add("hidden");
   await loadNetwork();
 });
+$("#netPeers").addEventListener("change",async e=>{
+  if(e.target.name!=="primaryPeer")return;
+  const id=e.target.dataset.primary;
+  const response=await post("/api/admin/network/primary",{peer_id:id},"PUT");
+  const result=await response.json().catch(()=>({}));
+  flashMsg("#netMsg",response.ok?(id?"Primary peer selected. Its catalogue will appear as local on the website.":"Using only this server as local."):(result.error||"Could not select primary peer"),!response.ok);
+  await loadNetwork();
+  if(response.ok)try{localStorage.setItem("wasp_peer_sync",String(Date.now()));}catch{}
+});
 $("#netPeers").addEventListener("click", async (e) => {
   const b = e.target.closest("button"); if (!b || !b.dataset.a) return;
   const id = b.closest("tr").dataset.peer;
@@ -906,3 +945,93 @@ $("#netPeers").addEventListener("click", async (e) => {
 });
 
 show();
+
+// Admin-only, read-only documentation viewer. Markdown source is bundled at
+// build time; the public static directory never exposes these files.
+let docsLoaded=false;
+const mdEscape=(s)=>esc(String(s||""));
+function mdInline(text){
+  let safe=mdEscape(text);
+  safe=safe.replace(/`([^`]+)`/g,(_,t)=>`<code>${t}</code>`);
+  safe=safe.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
+  safe=safe.replace(/\*([^*]+)\*/g,'<em>$1</em>');
+  safe=safe.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,(_,label,url)=>`<a href="${url.replace(/&amp;/g,'&amp;')}" target="_blank" rel="noopener noreferrer">${label}</a>`);
+  return safe;
+}
+function docsMarkdown(src){
+  let html='',code=[],mode=false,ul=false,ol=false,table=false;
+  const close=()=>{if(ul){html+='</ul>';ul=false;}if(ol){html+='</ol>';ol=false;}if(table){html+='</tbody></table>';table=false;}};
+  for(const line of String(src||"").split(/\r?\n/)){
+    if(/^```/.test(line)){close();if(mode){html+=`<pre><code>${mdEscape(code.join('\n'))}</code></pre>`;code=[];mode=false;}else mode=true;continue;}
+    if(mode){code.push(line);continue;}
+    if(!line.trim()){close();continue;}
+    const h=/^(#{1,6})\s+(.+)$/.exec(line);
+    if(h){close();html+=`<h${h[1].length}>${mdInline(h[2])}</h${h[1].length}>`;continue;}
+    if(/^\s*---+\s*$/.test(line)){close();html+='<hr>';continue;}
+    if(line.includes('|') && /^\s*\|?\s*:?[-]{3}/.test(line)){continue;}
+    if(/^\s*\|(.+)\|\s*$/.test(line)){
+      if(ul){html+='</ul>';ul=false;}if(ol){html+='</ol>';ol=false;}
+      if(!table){html+='<table><tbody>';table=true;}
+      html+='<tr>'+line.trim().replace(/^\||\|$/g,'').split('|').map(c=>`<td>${mdInline(c.trim())}</td>`).join('')+'</tr>';continue;
+    }
+    const bullet=/^\s*[-*]\s+(.+)$/.exec(line),number=/^\s*\d+\.\s+(.+)$/.exec(line);
+    if(bullet||number){if(table){html+='</tbody></table>';table=false;}
+      if(bullet&&!ul){if(ol){html+='</ol>';ol=false;}html+='<ul>';ul=true;}
+      if(number&&!ol){if(ul){html+='</ul>';ul=false;}html+='<ol>';ol=true;}
+      html+=`<li>${mdInline((bullet||number)[1])}</li>`;continue;}
+    close();if(/^>/.test(line))html+=`<blockquote>${mdInline(line.replace(/^>\s?/,''))}</blockquote>`;
+    else html+=`<p>${mdInline(line)}</p>`;
+  }
+  close();if(mode)html+=`<pre><code>${mdEscape(code.join('\n'))}</code></pre>`;
+  return html;
+}
+async function loadDocs(){
+  if(docsLoaded)return;
+  try{
+    const r=await fetch('/api/admin/docs',{cache:'no-store'});if(!r.ok)throw Error('Unable to load documentation');
+    const docs=await r.json();const select=$('#docsSelect');
+    select.innerHTML=docs.map(d=>`<option value="${esc(d.name)}">${esc(d.name)}</option>`).join('');
+    docsLoaded=true;if(docs.length)await showDoc(docs[0].name);
+    else $('#docsMsg').textContent='No release notes available.';
+  }catch(e){flashMsg('#docsMsg',e.message,true);}
+}
+async function showDoc(name){
+  try{
+    const r=await fetch('/api/admin/docs?name='+encodeURIComponent(name),{cache:'no-store'});
+    if(!r.ok)throw Error('Unable to load document');
+    const doc=await r.json();$('#docsBody').innerHTML=docsMarkdown(doc.content);
+    $('#docsMsg').textContent=doc.name;
+  }catch(e){flashMsg('#docsMsg',e.message,true);}
+}
+$('#docsSelect').onchange=e=>showDoc(e.target.value);
+
+// WASP v15: read-only exact-file duplicate audit. Deletion is allowed only
+// for an unreferenced, unplayed, web-uploaded duplicate; /music stays read-only.
+let duplicateRefreshBusy=false;
+async function loadDuplicates(){
+  if(duplicateRefreshBusy)return;duplicateRefreshBusy=true;
+  try{
+    const r=await fetch('/api/admin/duplicates',{cache:'no-store'});
+    const result=await r.json();if(!r.ok)throw Error(result.error||'Unable to load duplicates');
+    $('#duplicateCount').textContent=result.duplicate_count||0;
+    const st=result.status||{},pct=st.total?Math.round((st.scanned||0)*100/st.total):0;
+    $('#hashScanProgress').value=Math.max(0,Math.min(100,pct));
+    $('#hashScanState').textContent=`${st.state||'not_run'} · ${(st.scanned||0).toLocaleString()} / ${(st.total||0).toLocaleString()} files · ${(st.changed||0).toLocaleString()} newly hashed`+(st.error?' · '+st.error:'');
+    $('#duplicateList').innerHTML=result.groups?.length?result.groups.map(g=>`<section class="card" style="background:transparent"><b>${g.qty} identical files</b><p class="muted">SHA-256: <code>${esc(g.sha)}</code></p><table><thead><tr><th>Song</th><th>Source</th><th>Size</th><th>Action</th></tr></thead><tbody>${(g.items||[]).map(item=>`<tr><td>${esc(item.title||item.id)}<br><span class="muted">${esc(item.source_path||item.artist||'')}</span></td><td>${esc(item.source)}</td><td>${(Number(item.size)||0).toLocaleString()} bytes</td><td>${item.source==='upload'?`<button class="btn danger" data-duplicate-delete="${esc(item.id)}">Review delete</button>`:'Read-only'}</td></tr>`).join('')}</tbody></table></section>`).join(''):'<p class="muted">No exact duplicates indexed yet. Schedule a scan or scan now.</p>';
+  }catch(e){flashMsg('#duplicateMsg',e.message,true);}finally{duplicateRefreshBusy=false;}
+}
+$('#hashScanNow').onclick=async()=>{
+  const r=await post('/api/admin/hash-scan',{}),data=await r.json().catch(()=>({}));
+  flashMsg('#hashScanMsg',r.ok?'Folder scan queued; progress updates here.':(data.error||'Failed to queue scan'),!r.ok);
+  if(r.ok)loadDuplicates();
+};
+$('#duplicateList').onclick=async e=>{
+  const btn=e.target.closest('button[data-duplicate-delete]');if(!btn)return;
+  const id=btn.dataset.duplicateDelete;
+  if(!confirm('This will permanently delete this managed upload ONLY if an identical file survives and it has no plays, reactions or playlist references. Continue?'))return;
+  const word=prompt('To confirm, type: delete duplicate');if(word!=='delete duplicate')return;
+  const r=await fetch('/api/admin/duplicates/'+encodeURIComponent(id),{method:'DELETE',headers:{'content-type':'application/json'},body:JSON.stringify({confirm:word})});
+  const data=await r.json().catch(()=>({}));flashMsg('#duplicateMsg',r.ok?'Eligible duplicate deleted.':(data.error||'Deletion refused'),!r.ok);
+  if(r.ok){await loadDuplicates();refresh();}
+};
+setInterval(()=>{if(location.hash.startsWith('#duplicates'))loadDuplicates();},12000);

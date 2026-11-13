@@ -1,5 +1,5 @@
 # HTTPS front door for the music app
-# Works for bare IPs, domains, and localhost without extra configuration.
+# Configure SITE_ADDRESS with the public IP or DNS name used by clients.
 {
 	auto_https disable_redirects
 	# Optional: set DEFAULT_SNI to your public IP or domain for cleaner certificates
@@ -7,12 +7,12 @@
 }
 
 :80 {
-	reverse_proxy 127.0.0.1:8787
+	reverse_proxy 127.0.0.1:8788
 }
 
-:443 {
+https://{$SITE_ADDRESS:localhost} {
 	tls {$TLS_ARGS:internal}
-	reverse_proxy 127.0.0.1:8787 {
+	reverse_proxy 127.0.0.1:8788 {
 		header_up CF-Connecting-IP {remote_host}
 		flush_interval -1
 	}
