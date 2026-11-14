@@ -44,6 +44,49 @@ const store = {
 };
 const audio = $("#audio");
 const TABS = { recent: "Recently added", top: "Most listened", listened: "Recently listened", artists: "Artists", playlists: "Playlists", hearts: "Most hearted", likes: "Most liked", dislikes: "Most disliked", user: "My playlists", settings: "Account settings", request: "Request" };
+// Icon assets are the original user-supplied images; dark glyphs get a light CSS treatment.
+const NAV_ICONS = Object.fromEntries(Object.keys(TABS).map((key) => [key, `/nav-icons/${key}.png`]));
+let sidebarCollapsed = store.get('sidebarCollapsed', false) === true;
+const sidebarTooltip = $('#sidebarHoverTip');
+function hideSidebarTooltip() { if(sidebarTooltip) sidebarTooltip.hidden=true; }
+function showSidebarTooltip(text, x, y) {
+  if(!sidebarCollapsed || !sidebarTooltip) return hideSidebarTooltip();
+  sidebarTooltip.textContent = text;
+  sidebarTooltip.hidden=false;
+  const w=sidebarTooltip.offsetWidth,h=sidebarTooltip.offsetHeight;
+  sidebarTooltip.style.left = Math.max(8,Math.min(x+16,window.innerWidth-w-8))+'px';
+  sidebarTooltip.style.top = Math.max(8,Math.min(y+16,window.innerHeight-h-8))+'px';
+}
+function setSidebarCollapsed(value) {
+  sidebarCollapsed=Boolean(value);
+  document.body.classList.toggle('sidebar-collapsed',sidebarCollapsed);
+  const toggle=$('#sidebarToggle');
+  if(toggle){
+    toggle.setAttribute('aria-expanded',String(!sidebarCollapsed));
+    toggle.setAttribute('aria-label',sidebarCollapsed?'Expand sidebar':'Collapse sidebar');
+    toggle.title=sidebarCollapsed?'Expand sidebar':'Collapse sidebar';
+  }
+  store.set('sidebarCollapsed',sidebarCollapsed);
+  hideSidebarTooltip();
+}
+setSidebarCollapsed(sidebarCollapsed);
+$('#sidebarToggle').addEventListener('click',()=>setSidebarCollapsed(!sidebarCollapsed));
+$('#nav').addEventListener('pointerover',e=>{
+  const item=e.target.closest('.nav-item');
+  if(item)showSidebarTooltip(item.dataset.label,e.clientX,e.clientY);
+});
+$('#nav').addEventListener('pointermove',e=>{
+  const item=e.target.closest('.nav-item');
+  if(item)showSidebarTooltip(item.dataset.label,e.clientX,e.clientY);
+});
+$('#nav').addEventListener('pointerleave',hideSidebarTooltip);
+$('#nav').addEventListener('focusin',e=>{
+  const item=e.target.closest('.nav-item');
+  if(item){const r=item.getBoundingClientRect();showSidebarTooltip(item.dataset.label,r.right,r.top+8);}
+});
+$('#nav').addEventListener('focusout',hideSidebarTooltip);
+window.addEventListener('scroll',hideSidebarTooltip,true);
+window.addEventListener('blur',hideSidebarTooltip);
 const KEY = { heart: "hearts", like: "likes", dislike: "dislikes" };
 
 let tracks = [], byId = {}, playlists = [], userPublicPlaylists = [], peerPlaylists = [], query = "";
@@ -88,6 +131,10 @@ function applySite() {
   }
   brand.append(document.createTextNode(site.name || "WASP"));
   }
+  // The compact sidebar keeps a small recognizable icon even for image-based brands.
+  const mini=document.createElement('img');mini.className='mini-brand-icon';mini.alt='';
+  mini.src=site.favicon ? `/site/favicon?v=${site.favicon}` : '/wasp-icon.png';
+  brand.append(mini);
   applySidebarCredits();
   document.title = site.title || site.name || "WASP";
   $("#favicon").href = site.favicon ? `/site/favicon?v=${site.favicon}` : "/wasp-icon.png";
@@ -495,8 +542,9 @@ function parse() {
 }
 // Left menu is only the main sections. Sub tabs live in the sticky bar under search.
 function renderNav(tab) {
+  hideSidebarTooltip();
   $("#nav").innerHTML = Object.entries(TABS).filter(([k]) => !["user","settings"].includes(k) || currentAccount?.authenticated).map(([k, v]) =>
-    `<a class="nav-item" href="#${k}"${k === tab ? ' aria-current="page"' : ""}>${v}</a>`).join("");
+    `<a class="nav-item" href="#${k}" aria-label="${esc(v)}" data-label="${esc(v)}"${k === tab ? ' aria-current="page"' : ""}><span class="nav-icon-frame" aria-hidden="true"><img class="nav-icon${k === "hearts" ? " nav-icon-color" : ""}" src="${NAV_ICONS[k]}" alt=""></span><span class="nav-label">${esc(v)}</span></a>`).join("");
 }
 function renderSub(tab, sub) {
   const bar = $("#subbar");

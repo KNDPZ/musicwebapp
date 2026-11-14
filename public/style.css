@@ -515,3 +515,41 @@ body.up-open #lyrics.full{right:340px}
 .markdown-view pre code{padding:0}
 .markdown-view blockquote{padding-left:14px;border-left:3px solid var(--line2);color:var(--muted)}
 .markdown-view table{display:block;overflow-x:auto}
+
+
+/* WASP v15.0.4 — desktop collapsible sidebar / icon navigation. */
+.side-nav-controls{display:flex;justify-content:flex-end;margin:-8px 0 4px;min-height:34px}
+.sidebar-toggle{width:34px;height:34px;border:1px solid transparent;border-radius:9px;background:transparent;color:var(--muted);cursor:pointer;display:grid;place-items:center;padding:6px}
+.sidebar-toggle:hover,.sidebar-toggle:focus-visible{background:var(--panel);border-color:var(--line2);color:var(--accent)}
+.sidebar-toggle svg{width:19px;height:19px;stroke:currentColor;stroke-width:2;fill:none;stroke-linecap:round;stroke-linejoin:round}
+.sidebar-toggle .side-expand-icon{display:none}
+.nav-icon-frame{display:none}
+.side .mini-brand-icon{display:none}
+.sidebar-hover-tip{position:fixed;z-index:90;pointer-events:none;max-width:220px;padding:6px 10px;border-radius:7px;border:1px solid var(--line2);background:#272522;box-shadow:0 8px 22px #0009;color:var(--text);font-size:12px;font-weight:650;white-space:nowrap}
+.sidebar-hover-tip[hidden]{display:none}
+@media(min-width:761px){
+  .app{transition:grid-template-columns .18s ease}
+  body.sidebar-collapsed .app{grid-template-columns:76px minmax(0,1fr)}
+  body.sidebar-collapsed .app>.side{padding:18px 8px}
+  body.sidebar-collapsed .side .brand{padding:0 0 14px;text-align:center;font-size:0;min-height:42px;display:flex;align-items:center;justify-content:center}
+  body.sidebar-collapsed .side .brand>*:not(.mini-brand-icon){display:none}
+  body.sidebar-collapsed .side .mini-brand-icon{display:block;width:36px;height:36px;object-fit:contain}
+  body.sidebar-collapsed .side-nav-controls{justify-content:center;margin:-4px 0 10px}
+  body.sidebar-collapsed .sidebar-toggle .side-collapse-icon{display:none}
+  body.sidebar-collapsed .sidebar-toggle .side-expand-icon{display:block}
+  body.sidebar-collapsed .side .nav-label{display:none}
+  body.sidebar-collapsed #nav{display:flex;flex-direction:column;gap:6px}
+  body.sidebar-collapsed .side .nav-item{width:100%;height:52px;min-height:52px;padding:3px;display:flex;align-items:center;justify-content:center;border-radius:12px}
+  body.sidebar-collapsed .side .nav-item[aria-current=page]{box-shadow:none;background:var(--panel)}
+  body.sidebar-collapsed .side .nav-item[aria-current=page] .nav-icon-frame{border-color:var(--accent);background:#343b2c}
+  body.sidebar-collapsed .nav-icon-frame{display:grid;place-items:center;width:46px;height:46px;border:1px solid var(--line2);border-radius:12px;background:#242320;transition:background .15s,border-color .15s}
+  body.sidebar-collapsed .nav-item:hover .nav-icon-frame{background:#38362f;border-color:var(--accent)}
+  body.sidebar-collapsed .nav-icon{display:block;width:27px;height:27px;object-fit:contain;filter:brightness(0) invert(.87)}
+  body.sidebar-collapsed .nav-icon.nav-icon-color{filter:none}
+  body.sidebar-collapsed #sidebarCredits{display:none!important}
+}
+@media(max-width:760px){
+  .side-nav-controls{display:none}
+  .sidebar-hover-tip{display:none!important}
+}
+@media(prefers-reduced-motion:reduce){.app{transition:none!important}.nav-icon-frame{transition:none!important}}

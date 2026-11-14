@@ -35,10 +35,17 @@
 
 <div class="app">
   <aside class="side">
-    <a class="brand" id="brand" href="#home" aria-label="Home">WASP</a>
+    <a class="brand" id="brand" href="#home" aria-label="Home">WASP<img class="mini-brand-icon" src="/wasp-icon.png" alt=""></a>
+    <div class="side-nav-controls">
+      <button type="button" id="sidebarToggle" class="sidebar-toggle" aria-label="Collapse sidebar" aria-expanded="true" aria-controls="nav sidebarCredits" title="Collapse sidebar">
+        <svg class="side-collapse-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M15 4L7 12l8 8"/></svg>
+        <svg class="side-expand-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M14 4h6v6m0-6-7 7M10 20H4v-6m0 6 7-7"/></svg>
+      </button>
+    </div>
     <nav id="nav" aria-label="Browse"></nav>
     <div id="sidebarCredits" class="sidebar-credits" hidden></div>
   </aside>
+  <div id="sidebarHoverTip" class="sidebar-hover-tip" role="tooltip" hidden></div>
   <div class="main">
     <div class="stick">
       <div class="top">
@@ -140,6 +147,6 @@
   </div>
 </dialog>
 <dialog id="playlistDialog" class="playlist-dialog" aria-label="Add to playlist"><div class="playlist-dialog-content"><h2>Add to playlist</h2><label for="playlistOptions">Existing playlist</label><select id="playlistOptions"></select><div class="playlist-dialog-divider">Or create a new playlist</div><label for="newPlaylistName">New playlist name</label><input id="newPlaylistName" maxlength="80" placeholder="New playlist"><label class="playlist-check"><input type="checkbox" id="newPlaylistPublic"> Public playlist</label><p class="msg err" id="playlistMessage" role="status"></p><div class="playlist-dialog-actions"><button class="btn ghost" id="playlistCancel" type="button">Cancel</button><button class="btn" id="playlistSave" type="button">Add</button></div></div></dialog>
-<script src="/app.js?v=15.0.3" type="module"></script>
+<script src="/app.js?v=15.0.4" type="module"></script>
 </body>
 </html>

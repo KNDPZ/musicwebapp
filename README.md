@@ -17,6 +17,10 @@ You can deploy WASP locally for development, on **Cloudflare Workers**, or on yo
 > Once signed in, open **Admin → Account settings** to change it.
 
 
+### v15.0.4: Collapsible icon sidebar
+
+The public WASP sidebar starts fully expanded. Use the new arrow control at the top of the sidebar navigation to tuck it into a compact icon rail, giving more horizontal room to playlists, artists and songs. The compact rail uses the supplied colored/monochrome nav icons in rounded-square frames; hover over an icon to see its tab name. All links remain accessible and clickable, and sidebar BBCode credits are simply hidden until expanded. The choice is remembered in this browser. On phones, the existing horizontal text navigation remains. No data migration is required. See [`docs/V15-0-4-COLLAPSIBLE-SIDEBAR.md`](docs/V15-0-4-COLLAPSIBLE-SIDEBAR.md).
+
 ### v15.0.3: Embedded artwork fallback
 
 If Deezer has no match for an artist, album, or track cover, WASP tries JPEG/PNG/WebP art embedded in the original MP3 (including existing R2 uploads and Docker read-only `/music` files). Peer song cards can also try embedded artwork through the peer relay. Audio files are never modified; see `docs/V15-0-3-EMBEDDED-ARTWORK-FALLBACK.md` for supported tags and limits.
